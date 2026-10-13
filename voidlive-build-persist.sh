@@ -102,8 +102,12 @@ need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1 (install it first)"
 }
 
-# Desktop/greeter vocabularies accepted by --desktop / --greeter, mirroring
-# void-installer's DE list (plus mkiso's base/enlightenment/lxde/xfce-wayland).
+# Desktop/greeter vocabularies accepted by --desktop / --greeter.  This is the
+# shared DE/greeter vocabulary: the Installer's Stage-2 DE list (the authority)
+# plus mkiso's live-only variants (base/enlightenment/lxde/xfce-wayland).  The
+# canonical lists live in coordination/vocabulary.sh and are cross-checked
+# against both projects by coordination/check-pins.sh (SUPERVISION-CONTRACT §5);
+# the gates these drive mirror PINNED-INSTALLER in mkiso.sh.
 DESKTOP_CHOICES="kde gnome cinnamon xfce mate lxqt cosmic none base enlightenment lxde xfce-wayland"
 GREETER_CHOICES="auto sddm gdm lightdm lightdm-gtk lightdm-slick cosmic-greeter none"
 

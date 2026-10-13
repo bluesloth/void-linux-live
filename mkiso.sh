@@ -66,6 +66,11 @@ cleanup() {
     rm -rf "$INCLUDEDIR"
 }
 
+# installer.sh in this tree is the public code-only copy of the pinned
+# Installer artifact (PINNED-INSTALLER below): Void_Linux_Installer.sh
+# Beta-v2.9.92 @ 01c6248d..., shipped as /usr/bin/void-installer on the live
+# image. The upstream script carries an @@MKLIVE_VERSION@@ placeholder; this
+# one does not, so the sed below is a no-op kept for upstream compatibility.
 include_installer() {
     if [ -x installer.sh ]; then
         MKLIVE_VERSION="$(PROGNAME='' version)"
@@ -100,6 +105,14 @@ setup_pipewire() {
 # ---------------------------------------------------------------------------
 # Desktop-environment specific extras.
 #
+# PINNED-INSTALLER: Beta-v2.9.92 83ece9384ef142de673fb4c098b2cdec117121dc08798d2cc157209e65d855ce
+#   The per-DE gates below mirror the Installer's Stage-2 branches, and the
+#   Installer artifact itself is what this fork SHIPS: `installer.sh` in this
+#   tree is the public code-only copy of Void_Linux_Installer.sh Beta-v2.9.92
+#   (sha256 01c6248d04a314db442dea952b9d6a8957e29c54388ca0608ea404b313c7e14c),
+#   installed by include_installer() as /usr/bin/void-installer. Recorded in
+#   coordination/PINS.md §3.1; coordination/check-pins.sh verifies the SHAs.
+#
 # void-installer (the installer shipped on the live image) applies a set of
 # per-DE "gates" at install time.  Several DE metapackages omit pieces the user
 # expects on a fresh desktop — most visibly a terminal/text editor/volume
@@ -112,8 +125,8 @@ setup_pipewire() {
 # These helpers reproduce those gates in the LIVE environment: the packages are
 # added to the per-DE PKGS lists above, and the matching files/services are
 # dropped into the mklive include dir (copied into the rootfs by mklive after
-# packages are installed).  Keep them in sync with void-installer's Stage-2
-# DE branches (../Void_Linux_Installer/Void_Linux_Installer.sh).
+# packages are installed).  Keep them in sync with the pinned Installer
+# Stage-2 DE branches (PINNED-INSTALLER above).
 # ---------------------------------------------------------------------------
 
 # [USB-AUTOMOUNT] supervised udisks2 service for every graphical variant.

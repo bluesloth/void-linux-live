@@ -11,6 +11,39 @@ commit lists the underlying source commits.
 
 ## Unreleased
 
+## v1.1 — 2026-10-13
+
+Pin the Installer input, single-source the shared vocabulary, and ship the
+pinned Installer as the live image's installer.
+
+### Interop
+
+- Name the Installer artifact the per-DE gates mirror as a pinned
+  **version + SHA** (`PINNED-INSTALLER` in `mkiso.sh`:
+  `Void_Linux_Installer.sh` `Beta-v2.9.92` @ `83ece938…`) instead of referring
+  to a sibling working tree by relative path. The seam is now an artifact, not
+  a path (supervision contract §2 rule 2 / §3.2).
+- Point `DESKTOP_CHOICES` / `GREETER_CHOICES` at the shared vocabulary's single
+  source (`coordination/vocabulary.sh`); `coordination/check-pins.sh` now
+  extracts the DE list, the per-DE recommended DM and the greeter list from
+  both Live and the Installer and fails on any divergence.
+
+### Installer
+
+- Replace the stock upstream `installer.sh` with the pinned Installer itself:
+  `installer.sh` is now the **public code-only copy** of `Void_Linux_Installer.sh`
+  `Beta-v2.9.92` @ `01c6248d…` (canonical `83ece938…`), still installed as
+  `/usr/bin/void-installer`. The live image now ships the curated-DE / LUKS /
+  MULTI-FS installer whose Stage-2 branches the per-DE gates mirror, instead of
+  the generic upstream wizard. The Installer self-provisions its outer-stage
+  tooling via its live-CD package sync and reuses the seeded xbps cache, so no
+  extra packages are baked into the image.
+
+### Build and boot
+
+- Rebuild required to pick up the new installer; verify with a fresh boot test
+  (GRUB + Limine) before any publish.
+
 ## v1.0 — 2026-10-13
 
 Initial public release.
