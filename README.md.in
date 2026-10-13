@@ -1,0 +1,263 @@
+# The Void Linux live image/rootfs generator and installer
+
+## Overview
+
+This repository contains several utilities:
+
+* [*mklive.sh*](#mklivesh) - The Void Linux live image generator for x86
+* [*mkiso.sh*](#mkisosh) - Wrapper script to generate bootable and installable live
+  images for i686, x86_64, and aarch64.
+* [*mkrootfs.sh*](#mkrootfssh) - The Void Linux rootfs generator for all platforms
+* [*mkplatformfs.sh*](#mkplatformfssh) - The Void Linux filesystem tool to produce
+  a rootfs for a particular platform
+* [*mkimage.sh*](#mkimagesh) - The Void Linux image generator for ARM platforms
+* [*mknet.sh*](#mknetsh) - Script to generate netboot tarballs for Void
+* *installer.sh* - The Void Linux el-cheapo installer for x86
+* *release.sh* - interacts with GitHub CI to generate and sign images for releases
+
+### Workflow
+
+#### Generating x86 live ISOs
+
+To generate a live ISO like the officially-published ones, use
+[*mkiso.sh*](#mkisosh). To generate a more basic live ISO
+(which does not include things like `void-installer`), use [*mklive.sh*](#mklivesh).
+
+#### Generating ROOTFS tarballs
+
+ROOTFS tarballs contain a basic Void Linux root filesystem without a kernel.
+These can be useful for doing a [chroot install](https://docs.voidlinux.org/installation/guides/chroot.html)
+or for [chroots and containers](https://docs.voidlinux.org/config/containers-and-vms/chroot.html).
+
+Use [*mkrootfs.sh*](#mkrootfssh) to generate a Void Linux ROOTFS.
+
+#### Generating platform-specific tarballs
+
+Platform-specific ROOTFS tarballs, or PLATFORMFS tarballs, contain a basic Void
+Linux root filesystem including a kernel. These are commonly used for bootstrapping
+ARM systems or other environments that require platform-specific kernels, like
+Raspberry Pis.
+
+First create a ROOTFS for the desired architecture, then use
+[*mkplatformfs.sh*](#mkplatformfssh) to generate a Void Linux PLATFORMFS.
+
+#### Generating ARM images
+
+Platform-specific filesystem images contain a basic filesystem layout (`/` and
+`/boot` partitions), ready to be copied to the target drive with `dd`. These are
+not "live" images like those available on x86 platforms, and do not need
+installation like live ISOs.
+
+To generate these images, first create a PLATFORMFS for the desired platform,
+then use [*mkimage.sh*](#mkimagesh) to generate the image.
+
+## Dependencies
+
+Note that void-mklive is not guaranteed to work on distributions other than Void
+Linux, or in containers.
+
+* Compression type for the initramfs image (by default: liblz4 for lz4, xz)
+* xbps>=0.45
+* qemu-user-static binaries (for mkrootfs)
+* bash
+
+## Kernel Command-line Parameters
+
+`void-mklive`-based live images support several kernel command-line arguments
+that can change the behavior of the live system:
+
+- `live.autologin` will skip the initial login screen on `tty1`.
+- `live.user` will change the username of the non-root user from the default
+  `anon`. The password remains `voidlinux`.
+- `live.shell` sets the default shell for the non-root user in the live environment.
+- `live.accessibility` enables accessibility features like the console screenreader
+  `espeakup` in the live environment.
+- `console` can be set to `ttyS0`, `hvc0`, or `hvsi0` to enable `agetty` on that
+  serial console.
+- `locale.LANG` will set the `LANG` environment variable. Defaults to `en_US.UTF-8`.
+- `vconsole.keymap` will set the console keymap. Defaults to `us`.
+
+### Examples:
+
+- `live.autologin live.user=foo live.shell=/bin/bash` would create the user `foo`
+  with the default shell `/bin/bash` on boot, and log them in automatically on `tty1`
+- `live.shell=/bin/bash` would set the default shell for the `anon` user to `/bin/bash`
+- `console=ttyS0 vconsole.keymap=cf` would enable `ttyS0` and set the keymap in
+  the console to `cf`
+- `locale.LANG=fr_CA.UTF-8` would set the live system's language to `fr_CA.UTF-8`
+
+## Persistent Live USB
+
+> **Quick reference:** see [`CHEATSHEET.md`](CHEATSHEET.md) for copy-paste
+> examples of desktops, greeters, persistence, bootloaders and cache flags.
+
+Live images built from this repository enable persistent storage: the boot
+cmdline contains `rd.overlay=LABEL=VOID_OVL`. When such an ISO is booted from a
+USB stick that carries a partition labeled `VOID_OVL`, dracut mounts it as the
+writable overlay: everything changed while running the live system (installed
+packages, opencode, configuration, files) survives reboots. Without such a
+partition the system boots ephemeral as usual.
+
+Flash an ISO with a persistence partition in one step:
+
+```
+sudo ./voidlive-build-persist.sh flash /dev/sdX void-live-x86_64-<date>-<variant>.iso
+```
+
+This writes the ISO to the stick and creates a separate ext4 partition labeled
+`VOID_OVL` behind it (2GiB by default; pass `--overlay-size-mib 8192` or set
+`OVERLAY_SIZE_MIB=8192`). The default boot entry mounts it automatically.
+
+The flash step also initializes the `LiveOS/overlay-<live-label>-<live-uuid>`
+upper and `LiveOS/ovlwork` work directories inside that partition — dracut's
+`dmsquash-live` ignores a bare `VOID_OVL` filesystem (no overlay directories)
+and falls back to a temporary RAM overlay instead, with "Unable to find a
+persistent overlay" shown at boot.
+
+*Note:* the partition is only used when the ISO was built with
+`--persist`; otherwise it's just unused reserved space.
+
+### Seeding an offline XBPS package cache
+
+Building the ISO downloads every base + desktop package through an XBPS cache
+(`-c <dir>`, default `./xbps-cachedir-<arch>`). That same raw cache can be
+copied into the `VOID_OVL` partition so the `Void_Linux_Installer` on the
+booted stick reuses the packages from disk instead of re-fetching them — the
+installer auto-detects `/xbps-cachedir-<arch>` on the live file system:
+
+```
+sudo ./voidlive-build-persist.sh build --persist --seed-cache --both \
+    --flash /dev/sdX --overlay-size-mib 61440 \
+    --cache /run/media/<user>/<uuid>/xbps-cachedir-x86_64
+```
+
+- `--seed-cache` copies the cache into the fresh `VOID_OVL` partition — both at
+  the partition root and inside the dmsquash-live overlay upperdir — (with
+  `--flash`) or warns-copies it when run standalone.
+- `--cache <dir>` pins the cache explicitly (default: `./xbps-cachedir-<arch>`,
+  falling back to an auto-detected **populated** cache under `/run/media`
+  when the default is missing or empty). An explicit `--cache` always wins.
+- `--refresh-cache` refreshes the XBPS repository index before the build —
+  under xbps 0.60 that index lives in the running rootdir's
+  `/var/db/xbps/<url>`, not in the cache dir; the build then pulls the current
+  versions it resolves into the cache (existing packages are kept).
+  `--replace-cache` deletes all cached `*.xbps`/`*.sig2` first, then refreshes —
+  for building a fresh stamp set.
+
+`--seed-cache` also deposits a self-contained cache updater alongside the
+cache. On the booted persistent stick it's `/xbps-cache-tool.sh` and lets the
+stick keep its own cache fresh without the build host:
+
+```
+sudo /xbps-cache-tool.sh status                     # cache dir + package count
+sudo /xbps-cache-tool.sh update                     # refresh index (/var/db/xbps), keep packages
+sudo /xbps-cache-tool.sh replace                    # wipe *.xbps/*.sig2 + refresh
+sudo /xbps-cache-tool.sh replace --pkgs 'kde-plasma' # wipe + refresh + re-download
+sudo /xbps-cache-tool.sh download --pkgs 'base-system' # refresh + download
+```
+
+It auto-detects `/xbps-cachedir-<arch>` on the live-overlay root, the dracut
+overlay mountpoints (`/run/initramfs/overlayfs`, `/run/overlayfs-backing`), or
+under `/run/media` when the stick is plugged into a normal Linux box, with the
+same first-wins rules the installer's `_local_cache_detect()` uses, so it
+always targets the cache an install would auto-pick. The cache and tool are
+seeded both at the partition root and inside the dmsquash-live overlay upperdir,
+so they're reachable whether dracut holds the partition as the overlay or udisks
+auto-mounts it under `/run/media`.
+
+## Desktops and greeters
+
+By default the persist build produces a KDE Plasma image with SDDM, but any
+desktop and display manager void-installer offers can be selected at build time:
+
+```
+sudo ./voidlive-build-persist.sh build --desktop xfce
+sudo ./voidlive-build-persist.sh build --desktop gnome --greeter gdm
+sudo ./voidlive-build-persist.sh build --desktop mate --greeter lightdm-slick
+sudo ./voidlive-build-persist.sh build --desktop cosmic --greeter sddm
+sudo ./voidlive-build-persist.sh build --desktop none     # console-only
+```
+
+* `--desktop <de>` — one of `kde` (default), `gnome`, `cinnamon`, `xfce`,
+  `mate`, `lxqt`, `cosmic`, or `none` (void-installer's list), plus
+  `base`/`enlightenment`/`lxde`/`xfce-wayland` from mkiso.
+* `--greeter <g>` — one of `auto` (default), `sddm`, `gdm`, `lightdm`,
+  `lightdm-gtk`, `lightdm-slick`, `cosmic-greeter`, or `none`.
+
+With `auto`, the display manager is the one void-installer recommends for the
+desktop: SDDM for KDE/LXQt, cosmic-greeter for COSMIC, GDM for GNOME, and
+LightDM for Cinnamon/Xfce/MATE. `--greeter` overrides that pairing (any DM can
+drive any desktop), and `lightdm-gtk`/`lightdm-slick` choose the LightDM greeter
+explicitly (`auto`/`lightdm` uses the GTK greeter, void-installer's default).
+
+> **COSMIC** (`--desktop cosmic`, or `--greeter cosmic-greeter`) installs
+> `cosmic-desktop-full` from the third-party
+> [bluesloth/void-linux-cosmic](https://github.com/bluesloth/void-linux-cosmic).
+> Its signing key is pinned (DER SHA-256
+> `83ffd154d1dee504ea384a0c31b12e072d5884f7f75eb950e30ace852d7d2e7b`) and
+> vendored in `keys/`, so builds are reproducible and the trust anchor is not
+> read from the served index. The build aborts if the repo is unreachable.
+
+### Desktop-environment extras
+
+Every graphical flavor also carries the per-desktop "gates" void-installer
+applies on an installed system, so the live desktop behaves like one it
+installs:
+
+* terminal / text editor / volume applet where the metapackage omits it —
+  `mate-terminal` + `pluma` + `mate-media` (MATE), `FeatherPad` (LXQt),
+  `gedit` (Cinnamon);
+* a polkit privilege agent for the GTK-family desktops (`lxqt-policykit`, and
+  `polkit-gnome` for COSMIC);
+* a supervised `udisksd` service on every graphical flavor, so removable media
+  actually automounts on runit (Void's `udisks2` package ships only a D-Bus
+  activation unit and nothing supervises the daemon).
+
+COSMIC additionally gets a pre-seeded `xkb_config` (cosmic-comp leaves the
+greeter broken without one), `udiskie` behind a session-readiness XDG autostart
+guard (COSMIC has no built-in removable-media automounter), and a linked
+`power-profiles-daemon` service so the powermode picker has its
+`net.hadess.PowerProfiles` backend from the first boot (the live image installs
+no `tlp`, so there is no competing power manager).
+
+The live session is also brought up correctly per desktop: it auto-logs into
+the chosen desktop's real session (SDDM **and** cosmic-greeter/greetd included —
+the dracut hook reads the session recorded at build time instead of assuming
+KDE's `plasma.desktop`, and writes a greetd `[initial_session]` for
+cosmic-greeter), and LightDM greeters are pointed at a real wallpaper so the
+login screen is never a bare black rectangle.
+
+## Bootloaders
+
+BIOS boots always use syslinux. The EFI bootloader is selectable via
+`-B <grub|limine|both>` (default: `both` — Limine first, then GRUB, plus
+syslinux for BIOS):
+
+```
+sudo ./voidlive-build-persist.sh build                    # Limine + GRUB (EFI) + syslinux (BIOS)
+sudo ./voidlive-build-persist.sh build -B grub            # GRUB (EFI) + syslinux (BIOS)
+sudo ./voidlive-build-persist.sh build -B limine          # Limine (EFI) + syslinux (BIOS)
+```
+
+mkiso/mklive are upstream getopts-only (`-B`), so the persist wrapper also
+offers `--long` aliases that are translated to `-B` before the passthrough —
+the bootloader can be picked without dropping to short-flag syntax:
+
+```
+sudo ./voidlive-build-persist.sh build --bootloader grub   # ≡ -B grub
+sudo ./voidlive-build-persist.sh build --limine            # ≡ -B limine
+sudo ./voidlive-build-persist.sh build --both              # ≡ -B both
+```
+
+The translated flag is placed before any passthrough args, so an explicit
+`-B` later on the command line still wins (getopts keeps the last).
+
+Limine is an alternative modern multiprotocol bootloader (`xbps-install limine`).
+Its EFI binary is embedded in a FAT image (`boot/limine/efiboot.img`) and its
+`limine.conf` menu mirrors the GRUB entries (default, RAM, graphics-disabled,
+speech, memtest86+), with the same kernel command line including the
+persistence flags. Limine is not yet wired up for aarch64/asahi EFI ISOs;
+pass `-B grub` there.
+
+## Usage
+

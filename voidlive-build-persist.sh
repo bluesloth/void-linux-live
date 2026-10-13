@@ -1,0 +1,950 @@
+#!/bin/sh
+set -eu
+
+# Build a Void Linux live ISO (opencode-ready userland) with a selectable
+# desktop environment and greeter, and/or flash it onto a USB stick with a
+# persistent overlay partition.  The default is KDE Plasma + SDDM; every other
+# pairing mirrors void-installer (see --desktop / --greeter below).
+#
+# The boot cmdline baked into the ISO contains rd.overlay=LABEL=VOID_OVL, so
+# once a partition labeled VOID_OVL exists on the stick, dracut mounts it as
+# the writable upper layer: anything changed while running the live system
+# (installed packages, config, files) survives reboots.
+#
+# Usage:
+#   sudo ./voidlive-build-persist.sh build [--desktop <de>] [--greeter <g>] [--persist] [--flash <device>] [mklive-args...]
+#   sudo ./voidlive-build-persist.sh flash <device> [live-iso] [--overlay-size-mib MiB]
+#
+#   build                 Build the ISO (no subcommand is treated as build, so
+#                         old "sudo ./build.sh -B grub" invocations still work).
+#                         Extra args are passed to mklive.sh, e.g. -B grub|limine|both.
+#   build --persist       Add rd.overlay=LABEL=VOID_OVL to the boot cmdline so the
+#                         image persists to a VOID_OVL partition. Default is off,
+#                         which is right for plain USB and Ventoy sticks.
+#   build --desktop <de>  Desktop-environment flavor (mkiso -b). One of kde
+#                         (default), gnome, cinnamon, xfce, mate, lxqt, cosmic,
+#                         none — matching void-installer — plus mkiso's own
+#                         base, enlightenment, lxde and xfce-wayland. cosmic
+#                         uses the third-party bluesloth repo (pinned signing
+#                         key vendored in keys/).
+#   build --greeter <g>   Display manager / greeter (mkiso -g). One of auto
+#                         (default: the DM void-installer recommends for the
+#                         chosen desktop), sddm, gdm, lightdm, lightdm-gtk,
+#                         lightdm-slick, cosmic-greeter, or none.
+#   build --cache <dir>   XBPS package-cache directory for the build (mklive -c).
+#                         Default: ./xbps-cachedir-<arch> in THIS folder, so repeated
+#                         builds reuse already-downloaded packages instead of
+#                         re-fetching from the mirror each time. If that default is
+#                         missing/empty, an auto-detected POPULATED cache under
+#                         /run/media (arch-matched, writable, real .xbps, newest
+#                         first — the installer's own [LOCAL-CACHE] detection) is
+#                         used instead. An explicit --cache ALWAYS wins.
+#   build --refresh-cache Update the cache before building: refresh the XBPS
+#                         repository index so the build resolves current versions
+#                         (xbps 0.60 keeps indexes in the rootdir's
+#                         /var/db/xbps/<url>, NOT in the -c cache dir; the build
+#                         then pulls the newer versions of everything the new
+#                         image needs INTO the cache). Existing packages are kept.
+#                         Useful before creating fresh media.
+#   build --replace-cache Wipe the cache (delete all *.xbps/*.sig2) then refresh
+#                         the index — the build re-downloads cleanly. Also runs
+#                         the /run/media auto-detection so it can replace the
+#                         populated top-level cache rather than a fresh dir.
+#   build --flash <dev>   Build, then flash the freshly built ISO to <device> with
+#                         a persistence partition, in one command. To persist, add
+#                         --persist (see below). --overlay-size-mib is also honored.
+#   build --seed-cache    After flashing, copy the XBPS package cache into the new
+#                         VOID_OVL partition so a later install run can reuse the
+#                         packages from disk. Cache source is --cache <dir>, the
+#                         auto-detected populated cache, or the default
+#                         ./xbps-cachedir-<arch> in THIS folder. The cache is placed
+#                         both at the partition root and inside the dmsquash-live
+#                         overlay upperdir (LiveOS/overlay-<label>-<uuid>/), so it is
+#                         reachable whether dracut holds the partition as the overlay
+#                         or udisks mounts it under /run/media. ALSO deposits
+#                         xbps-cache-tool.sh alongside it: a self-contained updater
+#                         (/xbps-cache-tool.sh on the booted persistent live system)
+#                         that can status/update/replace/download the seeded cache
+#                         with the same refresh/wipe semantics as
+#                         --refresh-cache/--replace-cache.
+#   flash <device>        Write an ISO to the block device and add a persistence
+#                         partition. live-iso defaults to the newest
+#                         void-live-*.iso in $PWD. All data on <device> is destroyed.
+#                         Also initializes the LiveOS/overlay-<live-label>-<live-uuid>
+#                         upper + LiveOS/ovlwork work dirs that dracut's dmsquash-live
+#                         requires before it will mount the partition as the overlay
+#                         (a bare ext4 LABEL=VOID_OVL gets ignored -> RAM overlay).
+#                         Only images built with 'build --persist' will actually
+#                         use that partition.
+#
+# Example:
+#   sudo ./voidlive-build-persist.sh build -B grub
+#   sudo ./voidlive-build-persist.sh build --persist      # persistent image
+#   sudo ./voidlive-build-persist.sh flash /dev/sdb
+#   sudo ./voidlive-build-persist.sh build --persist --flash /dev/sdb
+#   sudo ./voidlive-build-persist.sh build --persist --seed-cache --flash /dev/sdb
+#   sudo ./voidlive-build-persist.sh build --persist --seed-cache --both --flash /dev/sdb
+#   sudo ./voidlive-build-persist.sh build --persist --seed-cache --both --flash /dev/sdb --refresh-cache
+#   sudo ./voidlive-build-persist.sh build --persist --seed-cache --both --flash /dev/sdb --replace-cache
+#   sudo ./voidlive-build-persist.sh flash /dev/sdb void-live-x86_64-20260915-kde.iso --overlay-size-mib 81920
+
+cd "$(dirname "$0")"
+
+OVERLAY_LABEL="VOID_OVL"
+OVERLAY_SIZE_MIB="${OVERLAY_SIZE_MIB:-2048}"
+
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+need_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1 (install it first)"
+}
+
+# Desktop/greeter vocabularies accepted by --desktop / --greeter, mirroring
+# void-installer's DE list (plus mkiso's base/enlightenment/lxde/xfce-wayland).
+DESKTOP_CHOICES="kde gnome cinnamon xfce mate lxqt cosmic none base enlightenment lxde xfce-wayland"
+GREETER_CHOICES="auto sddm gdm lightdm lightdm-gtk lightdm-slick cosmic-greeter none"
+
+_is_desktop() {
+    for _d in $DESKTOP_CHOICES; do [ "$1" = "$_d" ] && return 0; done
+    return 1
+}
+
+_is_greeter() {
+    for _g in $GREETER_CHOICES; do [ "$1" = "$_g" ] && return 0; done
+    return 1
+}
+
+usage() {
+    cat <<-EOH
+	Usage: $0 <build|flash> [arguments]
+
+build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-cache] [--replace-cache] [--seed-cache] [--flash <device>] [--overlay-size-mib MiB] [--bootloader <grub|limine|both>] [mklive-args...]
+    Build the live ISO (default when no subcommand is given); KDE + SDDM by default.
+    --desktop <de> selects the desktop: kde (default), gnome, cinnamon, xfce, mate,
+    lxqt, cosmic, none (void-installer's list), or base/enlightenment/lxde/xfce-wayland.
+    cosmic pulls cosmic-desktop-full from the third-party bluesloth repo (pinned
+    signing key vendored in keys/).
+    --greeter <g> selects the display manager / greeter: auto (default — the DM
+    void-installer recommends for the desktop), sddm, gdm, lightdm, lightdm-gtk,
+    lightdm-slick, cosmic-greeter, or none.
+    --persist adds the persistent-overlay kernel arg (rd.overlay=LABEL=VOID_OVL);
+    default is off (plain USB / Ventoy).
+    --cache <dir> sets the XBPS package-cache directory for the build
+    (default: ./xbps-cachedir-<arch> in this folder, shared across rebuilds).
+    --refresh-cache refreshes the XBPS repository index before building — under
+    xbps 0.60 that index lives in the rootdir's /var/db/xbps/<url>, not in the
+    cache dir; the build then pulls the current versions it resolves into the
+    cache (existing packages are kept).
+    --replace-cache wipes all *.xbps/*.sig2 from the cache and refreshes the index
+    so the build re-downloads cleanly. Both operate on the resolved cache dir.
+    --seed-cache also copies that cache into the VOID_OVL partition during
+    flash (both at the partition root and inside the dmsquash-live overlay
+    upperdir), so a later install can reuse the packages from disk, and
+    deposits xbps-cache-tool.sh alongside it: /xbps-cache-tool.sh on the
+    booted persistent live system (status/update/replace/download the cache).
+    --flash <device> builds, then writes the result to <device> with a
+    VOID_OVL persistence partition in one command; the built ISO is used
+    automatically.
+    --bootloader <grub|limine|both> (or the shorthand --grub/--limine/--both)
+    selects the EFI bootloader(s) for the image; translated to -B for
+    mkiso/mklive. User -B flags after it still win (getopts keeps the last).
+    When the cache default resolves to a missing/empty dir, a POPULATED
+    xbps-cachedir-<arch> under /run/media is auto-detected and used instead
+    (an explicit --cache always wins).
+    Remaining args pass through to mklive.sh.
+
+	flash <device> [live-iso] [--seed-cache] [--refresh-cache] [--replace-cache] [--cache <dir>] [--overlay-size-mib MiB]
+	    Write an ISO to <device> and append a VOID_OVL persistence partition,
+	    initializing the LiveOS/overlay-<live-label>-<live-uuid> + LiveOS/ovlwork
+	    directories dracut needs to actually use it as the persistent overlay.
+	    live-iso defaults to the newest void-live-*.iso in \$PWD.
+	    All data on <device> is destroyed.
+
+	Example: sudo $0 flash /dev/sdb void-live-x86_64-20260915-kde.iso --overlay-size-mib 81920
+	EOH
+}
+
+# Find a populated XBPS package cache: arch-matched (uname -m), writable,
+# containing real .xbps files, newest-touched first. Scans the live overlay
+# root and the dracut overlay mountpoints FIRST — a persistent VOID_OVL
+# partition is held by dracut at /run/initramfs/overlayfs and/or
+# /run/overlayfs-backing and is often NOT auto-mounted by udisks under
+# /run/media — then the Void_Linux_Installer.sh _local_cache_detect() locations
+# under /run/media. This keeps build/flash able to reuse the SAME cache the
+# installer would auto-pick on any boot (persistent or plain).
+_cache_detect() {
+    _ca="$(uname -m)"
+    _list=$(ls -1dt /xbps-cachedir-* \
+        /run/initramfs/overlayfs/xbps-cachedir-* \
+        /run/overlayfs-backing/xbps-cachedir-* \
+        /run/media/*/xbps-cachedir-* \
+        /run/media/*/*/xbps-cachedir-* 2>/dev/null || true)
+    for _cd in $_list; do
+        [ -n "$_cd" ] || continue
+        [ -d "$_cd" ] || continue
+        case "$_cd" in
+            *"xbps-cachedir-${_ca}") : ;;
+            *) continue ;;
+        esac
+        [ -w "$_cd" ] || continue
+        [ -n "$(find "$_cd" -maxdepth 1 -name '*.xbps' -print -quit 2>/dev/null)" ] || continue
+        printf '%s\n' "$_cd"
+        unset _ca _list _cd
+        return 0
+    done
+    unset _ca _list
+    return 1
+}
+
+# Resolve the cache directory: an EXPLICIT path always wins; otherwise the
+# project-default ./xbps-cachedir-<arch>; if that default is missing or EMPTY,
+# fall back to an auto-detected POPULATED cache under /run/media.
+_cache_resolve() {
+    _cr="${1:-}"
+    _cr_explicit="${2:-no}"
+    [ -n "$_cr" ] || _cr="$(pwd -P)/xbps-cachedir-$(uname -m)"
+    if [ "$_cr_explicit" != "yes" ] && \
+       { [ ! -d "$_cr" ] || [ -z "$(find "$_cr" -maxdepth 1 -name '*.xbps' -print -quit 2>/dev/null)" ]; }; then
+        _det=$(_cache_detect || true)
+        if [ -n "$_det" ]; then
+            echo "NOTE: default cache is missing/empty; using auto-detected populated cache: $_det" >&2
+            _cr="$_det"
+        fi
+        unset _det
+    fi
+    unset _cr_explicit
+    printf '%s\n' "$_cr"
+}
+
+# Optionally refresh / replace the cache before a build or a --seed-cache flash:
+#   --replace-cache  delete all cached *.xbps/*.sig2, then refresh the index
+#   --refresh-cache  refresh the XBPS repository index only (keep packages)
+# Refreshing updates the RUNNING host's index under /var/db/xbps/<url> — xbps
+# 0.60 never stores indexes in the -c cache dir (verified empirically: a bare
+# `xbps-install -S -c <dir>` wrote x86_64-repodata to /var/db/xbps/... and left
+# the cache dir holding only .xbps/.sig2). The refreshed index is what makes the
+# next build / download resolve current versions and fetch their payloads into
+# the cache. Any failure here is a NOTE, never a hard error.
+_cache_maintain() {
+    _cm="${1:-}"
+    [ -n "$_cm" ] || return 0
+    if [ "${REPLACE_CACHE:-no}" = "yes" ] || [ "${REFRESH_CACHE:-no}" = "yes" ]; then
+        [ -d "$_cm" ] || mkdir -p "$_cm"
+        if [ "${REPLACE_CACHE:-no}" = "yes" ]; then
+            echo "==> replacing cache: removing *.xbps/*.sig2 from $_cm"
+            find "$_cm" -maxdepth 1 \( -name '*.xbps' -o -name '*.sig2' \) -delete 2>/dev/null || true
+        fi
+        if command -v xbps-install >/dev/null 2>&1; then
+            echo "==> refreshing repository index (lands under /var/db/xbps, not the cache) for $_cm"
+            xbps-install -S -c "$_cm" >/dev/null 2>&1 \
+                || echo "NOTE: index refresh failed (network/repo?); continuing with existing data." >&2
+        else
+            echo "NOTE: xbps-install not found on host; index refresh skipped." >&2
+        fi
+    fi
+}
+
+# Deposit the self-contained cache-maintenance tool into the VOID_OVL partition
+# (written via temp-file + mv so a mid-write power cut can never leave a
+# truncated tool on the stick). On the booted persist live system it sits at
+# /xbps-cache-tool.sh and can update / replace the seeded /xbps-cachedir-<arch>
+# with the same semantics this script's --refresh-cache / --replace-cache use.
+_deposit_cache_tool() {
+    _dt_root="${1:?deposit root dir missing}"
+    mkdir -p "$_dt_root"
+    _dt_dest="$_dt_root/xbps-cache-tool.sh"
+    _dt_tmp="$_dt_root/.xbps-cache-tool.sh.tmp.$$"
+    cat > "$_dt_tmp" <<'XBPS_CACHE_TOOL_EOF'
+#!/usr/bin/env sh
+set -eu
+
+# xbps-cache-tool.sh -- maintain the XBPS package cache this stick carries.
+# Deposited by voidlive-build-persist.sh (build --persist --seed-cache --flash)
+# into the root of the VOID_OVL persistence partition AND into the dmsquash-live
+# overlay upperdir (LiveOS/overlay-<label>-<uuid>/); on the booted persistent
+# live system it is /xbps-cache-tool.sh and the seeded cache is
+# /xbps-cachedir-<arch>. On a regular Linux box (or a non-persistent boot) the
+# cache (and walk) is auto-detected at the live-overlay root, the dracut overlay
+# mountpoints, and under /run/media with the SAME first-wins rules the
+# Void_Linux_Installer / _local_cache_detect() uses, so this tool always targets
+# the cache an install would auto-pick.
+#
+#   status                         print the resolved cache location + package count
+#   update                         refresh the repository index (keep packages)
+#   replace                        wipe all *.xbps/*.sig2, refresh the index
+#   replace --pkgs 'pkg ...'       wipe, refresh, then re-download the listed packages
+#   download --pkgs 'pkg ...'      refresh, then download the listed packages
+#
+# Options:
+#   --cache <dir>     pin the cache directory (auto-detect otherwise)
+#   --pkgs '<pkg...>' space-separated package list for download / replace
+#
+# Examples:
+#   /xbps-cache-tool.sh status
+#   /xbps-cache-tool.sh update
+#   /xbps-cache-tool.sh replace
+#   /xbps-cache-tool.sh replace --pkgs 'base-system kde-plasma'
+#   /xbps-cache-tool.sh download --pkgs 'base-system kde-plasma'
+#
+# update / replace / download must run as root (repodata refresh + downloads
+# write into the cache). status works for anyone.
+
+CACHE_DIR=
+CMD=
+PKGS=
+
+warn() { echo "WARN: $*" >&2; }
+die()  { echo "FATAL: $*" >&2; exit 1; }
+need_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+
+usage() {
+    echo "Usage: $(basename "$0") <status|update|replace|download> [options]"
+    echo "  status            print the resolved cache dir + package count"
+    echo "  update            refresh the repository index (keep existing packages)"
+    echo "  replace           wipe all *.xbps/.sig2, then refresh the index"
+    echo "  download          refresh, then download packages (--pkgs required)"
+    echo "  --cache <dir>     pin the cache directory"
+    echo "  --pkgs '<pkg...>' package list for download/replace"
+    exit 0
+}
+
+# newest-first candidate cache dirs: live-overlay root, the dracut overlay
+# mountpoints (a persistent VOID_OVL partition is held by dracut there and is
+# often not auto-mounted by udisks), then /run/media depth-1 and depth-2 (the
+# udisks /<user>/<uuid> layout)
+_cache_candidates() {
+    ls -1dt /xbps-cachedir-* \
+        /run/initramfs/overlayfs/xbps-cachedir-* \
+        /run/overlayfs-backing/xbps-cachedir-* \
+        /run/media/*/xbps-cachedir-* \
+        /run/media/*/*/xbps-cachedir-* 2>/dev/null || true
+}
+
+# Prefer a POPULATED, writable, arch-matching dir; fall back to any writable,
+# arch-matching dir (an empty one can be seeded by update).
+_cache_detect() {
+    _ca=$(uname -m)
+    _fallback=
+    for _cd in $(_cache_candidates); do
+        [ -n "$_cd" ] || continue
+        [ -d "$_cd" ] || continue
+        case "$_cd" in
+            *"xbps-cachedir-${_ca}") : ;;
+            *) continue ;;
+        esac
+        [ -w "$_cd" ] || continue
+        if [ -n "$(find "$_cd" -maxdepth 1 -name '*.xbps' -print -quit 2>/dev/null)" ]; then
+            printf '%s\n' "$_cd"
+            unset _ca _cd
+            return 0
+        fi
+        [ -n "$_fallback" ] || _fallback="$_cd"
+    done
+    if [ -n "$_fallback" ]; then
+        printf '%s\n' "$_fallback"
+        unset _ca _cd _fallback
+        return 0
+    fi
+    unset _ca _cd _fallback
+    return 1
+}
+
+_cache_resolve() {
+    if [ -n "$CACHE_DIR" ]; then
+        printf '%s\n' "$CACHE_DIR"
+    else
+        _d=$(_cache_detect || true)
+        if [ -n "$_d" ]; then
+            printf '%s\n' "$_d"
+        else
+            printf '%s\n' "/xbps-cachedir-$(uname -m)"
+        fi
+        unset _d
+    fi
+}
+
+_ensure() {
+    [ -d "$1" ] || mkdir -p "$1"
+    [ -w "$1" ] || die "cache dir '$1' is not writable (run as root? medium read-only?)"
+}
+
+_refresh() {
+    echo "==> refreshing repository index (lands under /var/db/xbps, not the cache) for $1"
+    xbps-install -S -c "$1" >/dev/null 2>&1 \
+        || warn "index refresh failed (network/repo?); continuing with existing data."
+    echo "    done."
+}
+
+_wipe() {
+    echo "==> wiping *.xbps/*.sig2 from $1/"
+    find "$1" -maxdepth 1 \( -name '*.xbps' -o -name '*.sig2' \) -delete 2>/dev/null || true
+}
+
+_download() {
+    _scratch=$(mktemp -d /tmp/xbps-cache-tool.XXXXXX)
+    trap 'rm -rf "$_scratch"' EXIT
+    echo "==> downloading into cache: $2"
+    # shellcheck disable=SC2086
+    xbps-install -r "$_scratch" -c "$1" -y $PKGS || \
+        warn "download failed (network/mirror?); packages already fetched stay in the cache."
+}
+
+cmd_status() {
+    _c=$(_cache_resolve)
+    if [ -d "$_c" ]; then
+        _n=$(find "$_c" -maxdepth 1 -name '*.xbps' 2>/dev/null | wc -l)
+        _s=$(du -sh "$_c" 2>/dev/null | awk '{print $1}')
+        _w=yes; [ -w "$_c" ] || _w=no
+        echo "cache:   $_c"
+        echo "arch:    $(uname -m)"
+        echo "packages: $_n ($_s)"
+        echo "writable: $_w"
+        [ "$_w" = "no" ] && echo "NOTE: not writable -- update/replace will fail." >&2
+    else
+        echo "no cache yet at $_c"
+        echo "run '$0 update' to create it and refresh the repository index."
+    fi
+    return 0
+}
+
+cmd_update() {
+    [ "$(id -u)" -eq 0 ] || die "update requires root (status works without)"
+    _c=$(_cache_resolve)
+    _ensure "$_c"
+    _refresh "$_c"
+    echo "update complete: $_c"
+}
+
+cmd_replace() {
+    [ "$(id -u)" -eq 0 ] || die "replace requires root (status works without)"
+    _c=$(_cache_resolve)
+    _ensure "$_c"
+    _wipe "$_c"
+    _refresh "$_c"
+    if [ -n "$PKGS" ]; then
+        _download "$_c" "$PKGS"
+    fi
+    echo "replace complete: $_c"
+}
+
+cmd_download() {
+    [ "$(id -u)" -eq 0 ] || die "download requires root (status works without)"
+    [ -n "$PKGS" ] || die "download requires --pkgs '<pkg ...>'"
+    _c=$(_cache_resolve)
+    _ensure "$_c"
+    _refresh "$_c"
+    _download "$_c" "$PKGS"
+    echo "download complete: $_c"
+}
+
+
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        status|update|replace|download) CMD="$1"; shift ;;
+        --cache)
+            [ "$#" -ge 2 ] || die "--cache requires a directory"
+            CACHE_DIR=$(readlink -f "$2" 2>/dev/null || echo "$2")
+            shift 2
+            ;;
+        --cache=*) CACHE_DIR="${1#*=}"; shift ;;
+        --pkgs)
+            [ "$#" -ge 2 ] || die "--pkgs requires a package list"
+            PKGS="$2"
+            shift 2
+            ;;
+        -h|--help) usage ;;
+        *) die "unknown argument: $1 (try --help)" ;;
+    esac
+done
+
+[ -n "$CMD" ] || usage
+
+case "$CMD" in
+    status)   cmd_status ;;
+    update)   cmd_update ;;
+    replace)  cmd_replace ;;
+    download) cmd_download ;;
+esac
+XBPS_CACHE_TOOL_EOF
+    chmod 0755 "$_dt_tmp"
+    mv -f "$_dt_tmp" "$_dt_dest"
+    echo "Deposited cache updater: $_dt_dest"
+    echo "  (booted live system: /xbps-cache-tool.sh -- run it as root: /xbps-cache-tool.sh update)"
+    unset _dt_root _dt_dest _dt_tmp
+}
+
+build() {
+    [ -x ./mkiso.sh ] || die "mkiso.sh not found"
+
+    PERSISTENT_OVERLAY=no
+    FLASH_DEV=
+    CACHE_DIR=
+    SEED_CACHE=no
+    BOOTLOADER=
+    REFRESH_CACHE=no
+    REPLACE_CACHE=no
+    DESKTOP=kde
+    GREETER=auto
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --persist) PERSISTENT_OVERLAY=yes; shift ;;
+            --seed-cache) SEED_CACHE=yes; shift ;;
+            --refresh-cache) REFRESH_CACHE=yes; shift ;;
+            --replace-cache) REPLACE_CACHE=yes; shift ;;
+            --desktop)
+                [ "$#" -ge 2 ] || die "--desktop requires a value"
+                DESKTOP="$2"
+                _is_desktop "$DESKTOP" || die "unknown --desktop '$DESKTOP' (choose from: $DESKTOP_CHOICES)"
+                shift 2
+                ;;
+            --desktop=*)
+                DESKTOP="${1#*=}"
+                _is_desktop "$DESKTOP" || die "unknown --desktop '$DESKTOP' (choose from: $DESKTOP_CHOICES)"
+                shift
+                ;;
+            --greeter)
+                [ "$#" -ge 2 ] || die "--greeter requires a value"
+                GREETER="$2"
+                _is_greeter "$GREETER" || die "unknown --greeter '$GREETER' (choose from: $GREETER_CHOICES)"
+                shift 2
+                ;;
+            --greeter=*)
+                GREETER="${1#*=}"
+                _is_greeter "$GREETER" || die "unknown --greeter '$GREETER' (choose from: $GREETER_CHOICES)"
+                shift
+                ;;
+            --cache)
+                [ "$#" -ge 2 ] || die "--cache requires a directory"
+                CACHE_DIR=$(readlink -f "$2")
+                CACHE_EXPLICIT=yes
+                shift 2
+                ;;
+            --cache=*) CACHE_DIR=$(readlink -f "${1#*=}"); CACHE_EXPLICIT=yes; shift ;;
+            --flash)
+                [ "$#" -ge 2 ] || die "--flash requires a device"
+                FLASH_DEV=$(readlink -f "$2")
+                shift 2
+                ;;
+            --flash=*) FLASH_DEV=$(readlink -f "${1#*=}"); shift ;;
+            --overlay-size-mib)
+                [ "$#" -ge 2 ] || die "--overlay-size-mib requires a value"
+                OVERLAY_SIZE_MIB="$2"
+                shift 2
+                ;;
+            --overlay-size-mib=*) OVERLAY_SIZE_MIB="${1#*=}"; shift ;;
+            # mkiso/mklive are upstream getopts-only (-B); offer --long aliases
+            # here so the persist layer reads uniformly. Prepended below so a
+            # genuine user -B later in the line still wins.
+            --bootloader)
+                [ "$#" -ge 2 ] || die "--bootloader requires a value"
+                BOOTLOADER="$2"
+                shift 2
+                ;;
+            --bootloader=*) BOOTLOADER="${1#*=}"; shift ;;
+            --grub) BOOTLOADER="grub"; shift ;;
+            --limine) BOOTLOADER="limine"; shift ;;
+            --both) BOOTLOADER="both"; shift ;;
+            *) break ;;
+        esac
+    done
+    export PERSISTENT_OVERLAY OVERLAY_SIZE_MIB
+
+    # $DESKTOP       => desktop flavor for mkiso -b (kde by default; see
+    #                   --desktop). E.g. kde pulls kde5 + sddm + konsole/dolphin.
+    # $GREETER       => display manager / greeter for mkiso -g; 'auto' (default)
+    #                   uses the DM void-installer recommends for $DESKTOP.
+    # -x postsetup.sh => unlink dormant iptables after install (image uses nftables)
+    # -I includes   => copies includes/etc/nftables.conf (hardened firewall) into the image
+    # -- s          => mklive arguments after the -- are passed through
+    # -c <cachedir> => explicit XBPS cache (mklive option); pinned to THIS folder's
+    #                  xbps-cachedir-<arch> so the pre-seeded 2GB cache is reused and
+    #                  no package is re-downloaded across rebuilds. A user-supplied
+    #                  -c/--cache later on the line always wins (getopts takes the last -c).
+    CACHE_DIR=$(_cache_resolve "$CACHE_DIR" "${CACHE_EXPLICIT:-no}")
+    if [ ! -d "$CACHE_DIR" ]; then
+        echo "NOTE: XBPS cache dir '$CACHE_DIR' does not exist yet; it will be created" >&2
+    elif [ ! -w "$CACHE_DIR" ]; then
+        die "XBPS cache dir '$CACHE_DIR' is not writable; download reuse would fail"
+    fi
+    _cache_maintain "$CACHE_DIR"
+    _CACHE_MAINTAINED=yes
+
+    # MKLIVE_EXTRA: if --bootloader was set, translate to -B for mkiso/mklive;
+    # place it BEFORE "$@" so any user-provided -B still wins.
+    MKLIVE_EXTRA=
+    [ -z "$BOOTLOADER" ] || MKLIVE_EXTRA="-B $BOOTLOADER"
+
+    # GREETER_ARGS: omit -g entirely for the default (auto) so mkiso keeps its
+    # own per-desktop recommended DM.
+    GREETER_ARGS=
+    [ "$GREETER" = auto ] || GREETER_ARGS="-g $GREETER"
+
+    if [ -n "$FLASH_DEV" ]; then
+        echo "==> building image ($DESKTOP${GREETER:+, greeter $GREETER}) ..."
+        if ./mkiso.sh -b "$DESKTOP" $GREETER_ARGS -- -x "$PWD/postsetup.sh" -I "$PWD/includes" -c "$CACHE_DIR" $MKLIVE_EXTRA "$@"; then
+            :
+        else
+            die "build failed; not flashing $FLASH_DEV"
+        fi
+        ISO=$(ls -1t ./void-live-*.iso 2>/dev/null | head -n1)
+        [ -n "$ISO" ] || die "build finished but no void-live-*.iso found in \$PWD"
+        echo "==> flashing built image: $ISO"
+        flash "$FLASH_DEV" "$ISO"
+    else
+        exec ./mkiso.sh -b "$DESKTOP" $GREETER_ARGS -- -x "$PWD/postsetup.sh" -I "$PWD/includes" -c "$CACHE_DIR" $MKLIVE_EXTRA "$@"
+    fi
+}
+
+flash() {
+    [ "$#" -ge 1 ] || die "flash requires a device, e.g. $0 flash /dev/sdb"
+
+    DEV=$(readlink -f "$1")
+    shift
+
+    # Preserve already-set values when called from build() (--seed-cache /
+    # --cache propagate through the shell scope); standalone flash defaults off.
+    SEED_CACHE=${SEED_CACHE:-no}
+    CACHE_DIR=${CACHE_DIR:-}
+    CACHE_EXPLICIT=${CACHE_EXPLICIT:-no}
+    REFRESH_CACHE=${REFRESH_CACHE:-no}
+    REPLACE_CACHE=${REPLACE_CACHE:-no}
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --seed-cache) SEED_CACHE=yes; shift ;;
+            --refresh-cache) REFRESH_CACHE=yes; shift ;;
+            --replace-cache) REPLACE_CACHE=yes; shift ;;
+            --cache)
+                [ "$#" -ge 2 ] || die "--cache requires a directory"
+                CACHE_DIR=$(readlink -f "$2")
+                CACHE_EXPLICIT=yes
+                shift 2
+                ;;
+            --cache=*) CACHE_DIR=$(readlink -f "${1#*=}"); CACHE_EXPLICIT=yes; shift ;;
+            --overlay-size-mib)
+                [ "$#" -ge 2 ] || die "--overlay-size-mib requires a value"
+                OVERLAY_SIZE_MIB="$2"
+                shift 2
+                ;;
+            --overlay-size-mib=*)
+                OVERLAY_SIZE_MIB="${1#*=}"
+                shift
+                ;;
+            *)
+                ISO=$(readlink -f "$1")
+                shift
+                ;;
+        esac
+    done
+
+    : "${ISO:=$(ls -1t ./void-live-*.iso 2>/dev/null | head -n1)}"
+    [ -n "$ISO" ] || die "no live ISO found; pass one explicitly"
+    [ -f "$ISO" ] || die "live ISO not found: $ISO"
+    [ -b "$DEV" ] || die "not a block device: $DEV"
+    [ "$(id -u)" -eq 0 ] || die "must run as root"
+
+    need_cmd dd
+    need_cmd sfdisk
+    need_cmd mkfs.ext4
+    need_cmd partprobe
+    need_cmd blockdev
+    need_cmd lsblk
+    need_cmd blkid
+
+    if [ -n "$(lsblk -nro MOUNTPOINT "$DEV" 2>/dev/null | grep -v '^$')" ]; then
+        die "$DEV or one of its partitions is mounted; unmount it first"
+    fi
+
+    printf 'WARNING: %s and ALL its partitions will be erased.\n' "$DEV"
+    printf 'Type the device path again to confirm: '
+    read -r answer
+    [ "$answer" = "$DEV" ] || die "aborted"
+
+    iso_bytes=$(stat -c%s "$ISO")
+    iso_mib=$(( (iso_bytes + 1048575) / 1048576 ))
+    dev_mib=$(( $(blockdev --getsize64 "$DEV") / 1048576 ))
+
+    [ "$dev_mib" -ge "$OVERLAY_SIZE_MIB" ] || die \
+        "overlay too big: requested ${OVERLAY_SIZE_MIB}MiB but device $DEV is only ${dev_mib}MiB"
+    [ "$dev_mib" -ge "$iso_mib" ] || die \
+        "device too small: ISO is ${iso_mib}MiB but device $DEV is only ${dev_mib}MiB"
+    [ "$(( dev_mib - iso_mib ))" -ge "$OVERLAY_SIZE_MIB" ] || die \
+        "device too small: ISO (${iso_mib}MiB) + overlay (${OVERLAY_SIZE_MIB}MiB) does not fit, device is only ${dev_mib}MiB"
+
+    # Partitions are named differently for nvme/mmc devices.
+    partdev() {
+        case "$DEV" in
+            *[0-9]) echo "${DEV}p$1" ;;
+            *)      echo "${DEV}$1" ;;
+        esac
+    }
+
+    # Release every mount currently held on $1 (a whole disk or one partition).
+    # A live desktop session's automounter (udisks2) grabs removable media the
+    # moment udev announces it, so the target can become "in use" again between
+    # our own unmount and the next write; loop briefly and lazily detach.
+    _release_mounts() {
+        local _target="$1" _m _n=0
+        while [ -n "$(lsblk -nro MOUNTPOINT "$_target" 2>/dev/null | grep -v '^$')" ]; do
+            for _m in $(lsblk -nro MOUNTPOINT "$_target" 2>/dev/null | grep -v '^$'); do
+                umount "$_m" 2>/dev/null || umount -l "$_m" 2>/dev/null || true
+            done
+            udevadm settle >/dev/null 2>&1 || sleep 1
+            _n=$(( _n + 1 ))
+            if [ "$_n" -ge 5 ]; then break; fi
+        done
+        return 0
+    }
+
+    printf 'Writing %s to %s ...\n' "$ISO" "$DEV"
+    dd if="$ISO" of="$DEV" bs=4M status=progress conv=fsync
+    sync
+
+    # The automounter re-grabs the ISO partition while dd writes, so release it
+    # again before we touch the table (sfdisk's in-use check and the later mkfs
+    # would otherwise fail).  --no-reread on the append below covers the race
+    # where udisks wins again in the moment before sfdisk writes.
+    _release_mounts "$DEV"
+
+    # dd does not make the kernel re-read the partition table, and the kernel
+    # can keep a STALE view of a PREVIOUS flash (a lingering overlay node once
+    # made the old logic believe a fresh 3-entry ISO table had 4 primaries and
+    # the whole flash die here).  Force a real resync before trusting any
+    # partition numbering.  This can legitimately fail with EBUSY while a
+    # desktop session's automounter holds the ISO partition open; the slot
+    # numbering below then falls back to the authoritative on-disk table, so a
+    # failed resync is not fatal by itself.
+    udevadm settle >/dev/null 2>&1 || true
+    blockdev --rereadpt "$DEV" 2>/dev/null \
+        || partprobe "$DEV" >/dev/null 2>&1 \
+        || partx -u "$DEV" >/dev/null 2>&1 || true
+    udevadm settle >/dev/null 2>&1 || true
+
+    # The on-disk table is authoritative for slot numbering: count its entries
+    # directly from sfdisk rather than from lsblk, which reflects the kernel's
+    # (possibly stale or only partially resynced) view.
+    table_count=$(sfdisk -d "$DEV" 2>/dev/null | awk '/^\/dev\//{n++} END{print n+0}')
+
+    # Preflight the freshly written table. The project's hybrid ISOs carry an
+    # Apple Partition Map (-isohybrid-apm-hfsplus) that makes parted report the
+    # disk as "Partition Table: unknown" and fail every mkpart -- which is why
+    # the old parted-based flash never created VOID_OVL. sfdisk reads the DOS
+    # label fine, so require it and fail loudly rather than half-repartition a
+    # disk whose table we cannot parse.
+    sfdisk -d "$DEV" >/dev/null 2>&1 || die \
+        "cannot read the partition table on $DEV with sfdisk; refusing to repartition (sfdisk is required for the isohybrid/APM tables this project builds)"
+    table_label=$(sfdisk -d "$DEV" 2>/dev/null | awk '/^label:/{print $2; exit}')
+    case "$table_label" in
+        dos|gpt) : ;;
+        *) die "unsupported partition table on $DEV (label: ${table_label:-none}); expected the MBR/DOS isohybrid layout this project creates" ;;
+    esac
+
+    # The live volume (the ISO9660 filesystem of the hybrid image) carries the
+    # label/UUID dracut uses to name the overlay directories inside the
+    # persistence partition; read them from the just-written media. Prefer the
+    # ISO9660 *partition* when the kernel exposes one, but fall back to the whole
+    # device: xorriso's -isohybrid-mbr stamps partition 1 with system-id 0x00,
+    # which the Linux partition parser deliberately skips, so no /dev/<dev>1 node
+    # exists and blkid reports the filesystem directly on $DEV. Either way blkid
+    # returns the same LABEL/UUID, so dracut's overlay-<label>-<uuid> name (and
+    # thus the directory this function initializes) is unchanged.
+    LIVE_PART=$(lsblk -nro NAME,FSTYPE,TYPE "$DEV" 2>/dev/null \
+        | awk '$3 == "part" && $2 == "iso9660" { print "/dev/" $1; exit }')
+    [ -n "$LIVE_PART" ] || LIVE_PART=$(partdev 1)
+    [ -b "$LIVE_PART" ] || LIVE_PART=$DEV
+    LIVE_LABEL=$(blkid -s LABEL -o value "$LIVE_PART" 2>/dev/null || true)
+    LIVE_UUID=$(blkid -s UUID -o value "$LIVE_PART" 2>/dev/null || true)
+
+    # The ISO's own partition table already has entries (1=ISO9660 and the EFI
+    # images: 2=limine_uefi, 3=grub_uefi for -B both, Limine first). The new
+    # overlay is APPENDED after them, so its slot is table_count+1, not a
+    # hardcoded 3 (hardcoding 3 used to clobber the limine EFI partition on
+    # -B both images). An MBR table holds at most 4 primaries; the hybrid ISOs
+    # this project builds use exactly 3, leaving slot 4 for the overlay.  If a
+    # future ISO filled all 4, the overlay would have to live on the GPT side
+    # of the hybrid disk instead -- fail loudly rather than try a 5th primary.
+    # NB: never derive the slot from lsblk/kernel state; a stale node from a
+    # previous flash would make the MBR look fuller than it really is.
+    devname=$(basename "$DEV")
+    [ "$table_count" -le 3 ] || die \
+        "cannot add persistence partition: $DEV already has $table_count MBR primary partitions; on a 4-primary hybrid the overlay would need a GPT partition (not supported yet)"
+    next_part=$(( table_count + 1 ))
+
+    printf 'Creating persistence partition (slot %s, %sMiB, label %s) ...\n' "$next_part" "$OVERLAY_SIZE_MIB" "$OVERLAY_LABEL"
+    persist_start_sec=$(( (iso_mib + 2) * 2048 ))
+    persist_size_sec=$(( OVERLAY_SIZE_MIB * 2048 ))
+    # Do NOT use parted here: xorriso's Apple Partition Map
+    # (-isohybrid-apm-hfsplus) makes parted report "Partition Table: unknown"
+    # and mkpart fails. sfdisk reads the DOS label, appends the new primary and
+    # preserves the isohybrid boot code / existing entries.  --no-reread skips
+    # sfdisk's "is the device in use" ioctl test: the automounter legitimately
+    # holds the ISO partition and can win the race again, and we refresh the
+    # kernel's view ourselves below (partprobe/partx -a + geometry lookup), so
+    # we neither need nor want sfdisk's re-read.
+    if ! printf 'start=%s, size=%s, type=83\n' "$persist_start_sec" "$persist_size_sec" \
+        | sfdisk --no-reread --append "$DEV"; then
+        die "failed to add the persistence partition to $DEV"
+    fi
+
+    # Wait for the kernel to expose the new node, choosing it by GEOMETRY (the
+    # start sector we just appended) rather than an assumed number: the kernel
+    # can lag the table or hold a stale node from a previous flash, and a stale
+    # node with the wrong start must never be formatted.  The automounter keeps
+    # the ISO partition mounted, which makes a full re-read fail EBUSY, so each
+    # round first releases mounts on the device, then tries a full re-read and
+    # falls back to adding the single partition.  Note the `|| true` guards:
+    # this script runs under `set -eu`, and a command substitution that exits
+    # non-zero (a not-yet-visible node) would otherwise abort the whole flash.
+    _find_part_by_start() {
+        local want="$1" d start node
+        for d in /sys/block/"$devname"/"${devname}"[0-9]*/start \
+                 /sys/block/"$devname"/"${devname}"p[0-9]*/start; do
+            [ -e "$d" ] || continue
+            start=$(cat "$d" 2>/dev/null) || continue
+            if [ "$start" = "$want" ]; then
+                node=${d%/start}
+                echo "/dev/${node##*/}"
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    PART=""
+    for i in 1 2 3 4 5; do
+        PART=$(_find_part_by_start "$persist_start_sec" || true)
+        if [ -n "$PART" ]; then break; fi
+        _release_mounts "$DEV"
+        blockdev --rereadpt "$DEV" 2>/dev/null || true
+        partx -a "$DEV" >/dev/null 2>&1 || true
+        sleep 1
+    done
+    [ -n "$PART" ] || PART=$(partdev "$next_part")
+    [ -b "$PART" ] || die "persistence partition $PART did not appear after appending to $DEV"
+
+    # Geometry guard: never mkfs a node that does not start exactly where we
+    # appended. A stale node from a previous flash would silently clobber data.
+    _start=$(cat "/sys/block/$devname/${PART##*/}/start" 2>/dev/null || echo mismatch)
+    [ "$_start" = "$persist_start_sec" ] || die \
+        "partition node $PART starts at sector ${_start:-?}, expected $persist_start_sec; refusing to format (stale or mismatched kernel table view)"
+    unset _start
+
+    # An automounter (udisks2 on a live desktop session) can grab the freshly
+    # created partition the moment udev announces it, so the very next mkfs.ext4
+    # aborts with "is mounted; will not make a filesystem here!" and the flash
+    # dies AFTER the dd + repartition already ran. Release any automount targets
+    # of the new partition first; the overlay wiring below remounts it on
+    # purpose.
+    _release_mounts "$PART"
+
+    printf 'Formatting %s ...\n' "$PART"
+    mkfs.ext4 -q -L "$OVERLAY_LABEL" "$PART"
+    sync
+
+    # dracut's dmsquash-live only uses the labeled partition as a persistent
+    # overlay if it already contains the upper/work layout it expects:
+    #   LiveOS/overlay-<live-label>-<live-uuid>/   (upperdir)
+    #   LiveOS/ovlwork/                            (workdir)
+    # A bare mkfs is NOT enough: without these directories dracut prints
+    # "Unable to find a persistent overlay; using a temporary one" and runs
+    # from a RAM overlay. The overlay-<label>-<uuid> name matches the
+    # "overlay-$l-$u" path dmsquash-live computes from the live volume.
+    if [ -n "$LIVE_LABEL" ] && [ -n "$LIVE_UUID" ]; then
+        _mnt=$(mktemp -d /tmp/void-ovl-init.XXXXXX)
+        mount "$PART" "$_mnt"
+        mkdir -p "$_mnt/LiveOS/ovlwork"
+        mkdir -p "$_mnt/LiveOS/overlay-${LIVE_LABEL}-${LIVE_UUID}"
+        sync
+        umount "$_mnt"
+        rmdir "$_mnt"
+        unset _mnt
+    else
+        echo "WARNING: could not read the live volume label/UUID from $LIVE_PART;" >&2
+        echo "         dracut may not detect the overlay. Is this a Void live ISO?" >&2
+    fi
+
+    # --seed-cache: copy the raw XBPS package cache into the fresh VOID_OVL
+    # partition so a later Void_Linux_Installer run on this stick can reuse the
+    # packages from disk instead of re-fetching them from the mirror. The cache
+    # and tool are placed BOTH at the partition root (reached via /run/media
+    # when udisks mounts the stick, and always at /run/initramfs/overlayfs when
+    # dracut holds it) AND inside the dmsquash-live overlay upperdir
+    # LiveOS/overlay-<label>-<uuid>/ — which IS / on a persistent boot, so they
+    # show up as /xbps-cachedir-<arch> and /xbps-cache-tool.sh there. Cache dir
+    # resolution mirrors build(): explicit --cache wins, else the default
+    # ./xbps-cachedir-<arch> in THIS folder, else an auto-detected populated
+    # cache under /run/media. A missing/unreadable cache is a WARN + skip, never
+    # a hard failure.
+    if [ "$SEED_CACHE" = "yes" ]; then
+        CACHE_DIR=$(_cache_resolve "$CACHE_DIR" "$CACHE_EXPLICIT")
+        if [ "${_CACHE_MAINTAINED:-no}" != "yes" ]; then
+            _cache_maintain "$CACHE_DIR"
+        fi
+        if [ -d "$CACHE_DIR" ] && [ -r "$CACHE_DIR" ]; then
+            _mnt=$(mktemp -d /tmp/void-ovl-seed.XXXXXX)
+            echo "Seeding package cache into $PART ..."
+            mount "$PART" "$_mnt"
+            _deposit_cache_tool "$_mnt"
+            cp -a "$CACHE_DIR" "$_mnt/"
+            # Also seed the overlay upperdir so the cache/tool become visible at
+            # / on a persistent boot. dmsquash-live uses
+            # LiveOS/overlay-<live-label>-<live-uuid> as the overlay upperdir
+            # (created earlier in this function); fall back gracefully when it
+            # is absent (persistence never initialized).
+            _ovl_upper=
+            if [ -n "$LIVE_LABEL" ] && [ -n "$LIVE_UUID" ]; then
+                _ovl_upper="$_mnt/LiveOS/overlay-${LIVE_LABEL}-${LIVE_UUID}"
+            fi
+            if [ -n "$_ovl_upper" ] && [ -d "$_ovl_upper" ]; then
+                echo "Seeding package cache into overlay upperdir (visible as / on a persistent boot) ..."
+                _deposit_cache_tool "$_ovl_upper"
+                cp -a "$CACHE_DIR" "$_ovl_upper/"
+            else
+                echo "NOTE: overlay upperdir not found; seeded the partition root only." >&2
+            fi
+            unset _ovl_upper
+            sync
+            umount "$_mnt"
+            rmdir "$_mnt"
+            unset _mnt
+            echo "Package cache seeded: $CACHE_DIR"
+        else
+            echo "NOTE: --seed-cache requested but no usable cache at $CACHE_DIR; skipping." >&2
+        fi
+    fi
+
+    echo
+    echo "Done. Persistent live USB ready:"
+    echo "  device:       $DEV"
+    echo "  live system:  $ISO"
+    echo "  persistence:  $PART (ext4, label $OVERLAY_LABEL, ${OVERLAY_SIZE_MIB}MiB)"
+    if [ -n "$LIVE_LABEL" ] && [ -n "$LIVE_UUID" ]; then
+        echo "  overlay upper: LiveOS/overlay-${LIVE_LABEL}-${LIVE_UUID}"
+        echo "  overlay work:  LiveOS/ovlwork"
+    fi
+    if [ "$SEED_CACHE" = "yes" ] && [ -d "$CACHE_DIR" ]; then
+        echo "  seeded cache: $CACHE_DIR (reusable by the installer)"
+        echo "  cache updater: /xbps-cache-tool.sh on the booted stick (update/replace/download)"
+    fi
+    echo
+    echo "Changes made while running the live system (installed packages, config,"
+    echo "files) are saved to $PART and survive reboots."
+    echo "Note: persistence activates only if the ISO was built with 'build --persist';"
+    echo "otherwise the boot cmdline lacks rd.overlay=LABEL=VOID_OVL and $PART is unused."
+    echo "Boot the stick, pick the default entry, install opencode or anything else,"
+    echo "reboot, and the changes are still there."
+}
+
+CMD="${1:-build}"
+case "$CMD" in
+    build)          shift; build "$@" ;;
+    flash)          shift; flash "$@" ;;
+    -h|--help|help) usage; exit 0 ;;
+    -*)             build "$@";;      # old-style bare mklive args still build
+    *)              usage >&2; exit 1 ;;
+esac

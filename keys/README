@@ -1,0 +1,18 @@
+Third-party repository keys vendored here
+=========================================
+
+mklive's copy_void_keys() copies every keys/*.plist into each image's XBPS
+trust store (/var/db/xbps/keys). A key is inert unless its matching repository
+is enabled, so these are safe to ship in all images.
+
+cc:ca:ec:11:69:c9:c9:00:65:1e:93:de:15:02:01:83.plist
+    bluesloth/void-linux-cosmic   https://github.com/bluesloth/void-linux-cosmic
+    Used only when building with `--desktop cosmic` or `--greeter cosmic-greeter`
+    (voidlive-build-persist.sh) / `mkiso.sh -b cosmic` or `-g cosmic-greeter`.
+
+    Trust anchor pinned to the same value void-installer uses:
+      DER SHA-256  83ffd154d1dee504ea384a0c31b12e072d5884f7f75eb950e30ace852d7d2e7b
+      Fingerprint  cc:ca:ec:11:69:c9:c9:00:65:1e:93:de:15:02:01:83
+
+    Audit the repository before enabling it. The build aborts if the repo is
+    unreachable, rather than trusting a key fetched from the served index.
