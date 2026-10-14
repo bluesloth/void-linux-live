@@ -11,6 +11,16 @@ commit lists the underlying source commits.
 
 ## Unreleased
 
+### Packages
+
+- **[ALL-DE-EXTRAS]** Give the live image app parity with void-installer's
+  *unconditional, all-DE* install set. Add `xdg-user-dirs xdg-utils rsync wget
+  make binutils inotify-tools fastfetch cronie bridge-utils smartmontools` to the
+  base package list, and `alsa-utils alsa-ucm-conf wireplumber sof-firmware
+  libjack-pipewire` to the graphical audio stack. void-installer's *gated,
+  opt-in* apps (browsers, `cosmic-store`, flatpak, …) are deliberately not added
+  — the live image stays lean there.
+
 ## v1.1 — 2026-10-13
 
 Pin the Installer input, single-source the shared vocabulary, and ship the

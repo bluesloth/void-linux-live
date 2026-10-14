@@ -86,6 +86,14 @@ include_installer() {
 
 setup_pipewire() {
     PKGS="$PKGS pipewire alsa-pipewire"
+    # [ALL-DE-EXTRAS] Audio utilities mirroring void-installer's graphical
+    # [HEADLESS-AUDIO] stack (Beta-v2.9.92, unconditional when the box is
+    # graphical): alsa-utils (alsamixer & friends), alsa-ucm-conf (USB/HDMI UCM
+    # profiles), wireplumber (the PipeWire session/policy manager the conf.d
+    # symlink below expects), sof-firmware (Sound Open Firmware for modern laptop
+    # codecs) and libjack-pipewire (the JACK bridge).  pipewire + alsa-pipewire
+    # are already added above.
+    PKGS="$PKGS alsa-utils alsa-ucm-conf wireplumber sof-firmware libjack-pipewire"
     case "$ARCH" in
         asahi*)
             PKGS="$PKGS asahi-audio"
@@ -301,6 +309,26 @@ build_variant() {
 
     A11Y_PKGS="espeakup void-live-audio brltty"
     PKGS="dialog cryptsetup lvm2 mdadm void-docs-browse xtools-minimal xmirror chrony tmux vim nano git curl nftables $A11Y_PKGS $GRUB_PKGS"
+
+    # -----------------------------------------------------------------------
+    # [ALL-DE-EXTRAS] Unconditional app parity with void-installer.
+    #
+    # void-installer's Stage-2 "everyday roll-up" installs this set on EVERY
+    # desktop and profile regardless of DE (see PINNED-INSTALLER above;
+    # Void_Linux_Installer.sh Beta-v2.9.92, its unconditional
+    #   `install_pkgs xdg-user-dirs xdg-utils xtools rsync git curl wget make
+    #    binutils inotify-tools fastfetch chrony cronie bridge-utils
+    #    smartmontools`
+    # line).  The LIVE image should carry the same baseline so the live session
+    # offers the same everyday tools a person ends up with after installing.
+    # git/curl/chrony/vim/nano are already in the base line above; xtools-minimal
+    # (NOT the Installer's full xtools) is deliberately retained — the live image
+    # wants the smaller tool set and the two packages conflict.  This mirrors
+    # the Installer's UNCONDITIONAL set only; its gated/opt-in apps (browsers,
+    # cosmic-store, flatpak, …) are intentionally NOT added here.
+    # -----------------------------------------------------------------------
+    PKGS="$PKGS xdg-user-dirs xdg-utils rsync wget make binutils inotify-tools fastfetch cronie bridge-utils smartmontools"
+
     FONTS="font-misc-misc terminus-font dejavu-fonts-ttf"
     WAYLAND_PKGS="$GFX_WL_PKGS $FONTS orca"
     XORG_PKGS="$GFX_PKGS $FONTS xorg-minimal xorg-input-drivers setxkbmap xauth orca"
