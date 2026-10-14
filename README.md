@@ -56,12 +56,51 @@ then use [*mkimage.sh*](#mkimagesh) to generate the image.
 ## Dependencies
 
 Note that void-mklive is not guaranteed to work on distributions other than Void
-Linux, or in containers.
+Linux, or in containers. (The `voidlive-build-persist.sh` wrapper works around
+this: on a non-Void host it runs the build in a container or a Void chroot — see
+[Building on non-Void hosts](#building-on-non-void-hosts).)
 
 * Compression type for the initramfs image (by default: liblz4 for lz4, xz)
 * xbps>=0.45
 * qemu-user-static binaries (for mkrootfs)
 * bash
+
+## Building on non-Void hosts
+
+`mklive.sh`/`mkiso.sh` are Void-native: `lib.sh` computes the host architecture
+with `xbps-uhelper` and the build provisions its tooling with `xbps-install`, so
+they normally run only on Void Linux. On any other distribution `xbps-uhelper`
+is missing, `HOSTARCH` comes back empty, and the build aborts with a misleading
+`qemu-x86_64 binary is missing` error (a native build needs no qemu at all).
+
+`voidlive-build-persist.sh` therefore detects a non-Void host and runs the
+**build** inside a Void userspace, so an ISO can be built from Debian, Arch,
+etc. Select it with `--build-env` (or the `VOID_BUILD_ENV` variable):
+
+* `auto` (default) — use a podman/docker container when one is installed (the
+  image is built from `container/Containerfile` on first use), otherwise
+  bootstrap a Void ROOTFS chroot under `./.void-buildenv`.
+* `container` — require podman or docker.
+* `chroot` — require the bootstrapped ROOTFS chroot.
+* `native` — never wrap; run `mklive.sh` here (valid on Void hosts only).
+
+```
+sudo ./voidlive-build-persist.sh build --persist --build-env auto
+```
+
+The container runs `--privileged` (mklive chroots and bind-mounts) with the
+project directory mounted at the same path, so `--cache` and the output ISO
+resolve identically inside and outside. The first container build / ROOTFS
+bootstrap needs network access and takes longer; later builds reuse it.
+
+`flash` is never wrapped — it is plain `dd`/`sfdisk`/`mkfs.ext4` and runs on the
+host, so `build --flash <dev>` builds in the Void environment and then flashes
+on the host. The environment can also be tuned with the `BUILD_ENV_IMAGE`,
+`BUILD_ENV_DIR`, `BUILD_ENV_ROOTFS_BASE` and `BUILD_ENV_NETWORK` variables
+(the container defaults to `--network host` to avoid resolver/NAT failures in
+rootful podman's bridge). Cross-architecture
+builds (target architecture ≠ host) additionally need `qemu-user-static` plus
+binfmt registered on the host.
 
 ## Kernel Command-line Parameters
 

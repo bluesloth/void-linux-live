@@ -262,6 +262,36 @@ sudo ./voidlive-build-persist.sh build --cache /run/media/you/STICK/xbps-cachedi
 `--seed-cache` is only meaningful together with `flash` (it writes into the
 overlay partition). A missing cache is a warning, not a failure.
 
+## Building from a non-Void host (Debian, Arch, ...)
+
+`mklive.sh` needs the Void XBPS toolchain (`xbps-uhelper`, `xbps-install`,
+`xbps-reconfigure`), which only exists on Void Linux — otherwise the build dies
+with a misleading `qemu-x86_64 binary is missing` error. The wrapper detects a
+non-Void host and runs the **build** in a Void userspace automatically:
+
+| `--build-env` | Behaviour |
+| --- | --- |
+| `auto` (default) | podman/docker container if one is installed, else a Void ROOTFS chroot |
+| `container` | require podman or docker (image built from `container/Containerfile` on first use) |
+| `chroot` | require a Void ROOTFS bootstrapped under `./.void-buildenv` (48 MB, one-time) |
+| `native` | never wrap — run `mklive.sh` here (Void hosts only) |
+
+```sh
+# Debian/Arch: auto-selects container (if present) or chroot
+sudo ./voidlive-build-persist.sh build --persist --build-env auto
+
+# force one or the other
+sudo ./voidlive-build-persist.sh build --persist --build-env container
+sudo ./voidlive-build-persist.sh build --persist --build-env chroot
+```
+
+`flash` is never wrapped — it is plain `dd`/`sfdisk`/`mkfs.ext4` and runs on the
+host, so `build --flash /dev/sdX` builds in the Void environment and then flashes
+on the host. The container runs `--privileged` (mklive chroots and bind-mounts)
+with the project mounted at the same path; `--cache` and the output ISO resolve
+identically inside and out. Cross-arch builds (target ≠ host) additionally need
+`qemu-user-static` + binfmt on the host.
+
 ## Common one-shot combos
 
 ```sh

@@ -12,7 +12,7 @@ set -eu
 # (installed packages, config, files) survives reboots.
 #
 # Usage:
-#   sudo ./voidlive-build-persist.sh build [--desktop <de>] [--greeter <g>] [--persist] [--flash <device>] [mklive-args...]
+#   sudo ./voidlive-build-persist.sh build [--desktop <de>] [--greeter <g>] [--persist] [--flash <device>] [--build-env auto|container|chroot|native] [mklive-args...]
 #   sudo ./voidlive-build-persist.sh flash <device> [live-iso] [--overlay-size-mib MiB]
 #
 #   build                 Build the ISO (no subcommand is treated as build, so
@@ -87,6 +87,13 @@ set -eu
 #   sudo ./voidlive-build-persist.sh build --persist --seed-cache --both --flash /dev/sdb --refresh-cache
 #   sudo ./voidlive-build-persist.sh build --persist --seed-cache --both --flash /dev/sdb --replace-cache
 #   sudo ./voidlive-build-persist.sh flash /dev/sdb void-live-x86_64-20260915-kde.iso --overlay-size-mib 81920
+#
+# Building needs the Void XBPS toolchain that mklive.sh/lib.sh use.  On a
+# non-Void host (Debian, Arch, ...) the build automatically runs in a Void
+# environment instead: a podman/docker container when one is available (image
+# from container/Containerfile), otherwise a Void ROOTFS chroot bootstrapped
+# under ./.void-buildenv.  Force a mode with --build-env container|chroot|native
+# (see `build --help`).  `flash` never needs Void and always runs on the host.
 
 cd "$(dirname "$0")"
 
@@ -125,7 +132,7 @@ usage() {
     cat <<-EOH
 	Usage: $0 <build|flash> [arguments]
 
-build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-cache] [--replace-cache] [--seed-cache] [--flash <device>] [--overlay-size-mib MiB] [--bootloader <grub|limine|both>] [mklive-args...]
+build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-cache] [--replace-cache] [--seed-cache] [--flash <device>] [--overlay-size-mib MiB] [--bootloader <grub|limine|both>] [--build-env auto|container|chroot|native] [mklive-args...]
     Build the live ISO (default when no subcommand is given); KDE + SDDM by default.
     --desktop <de> selects the desktop: kde (default), gnome, cinnamon, xfce, mate,
     lxqt, cosmic, none (void-installer's list), or base/enlightenment/lxde/xfce-wayland.
@@ -158,6 +165,13 @@ build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-ca
     When the cache default resolves to a missing/empty dir, a POPULATED
     xbps-cachedir-<arch> under /run/media is auto-detected and used instead
     (an explicit --cache always wins).
+    --build-env auto|container|chroot|native selects where the build runs.
+    mklive.sh needs the Void XBPS toolchain, which non-Void hosts lack; rather
+    than fail, the build runs in a Void userspace. auto (default) uses a
+    podman/docker container when one is present (image built from
+    container/Containerfile on first use), else bootstraps a Void ROOTFS chroot
+    under ./.void-buildenv. container/chroot force one; native runs mklive here
+    (Void hosts only). --flash is always done on the host, after the build.
     Remaining args pass through to mklive.sh.
 
 	flash <device> [live-iso] [--seed-cache] [--refresh-cache] [--replace-cache] [--cache <dir>] [--overlay-size-mib MiB]
@@ -481,8 +495,386 @@ XBPS_CACHE_TOOL_EOF
     unset _dt_root _dt_dest _dt_tmp
 }
 
+# ---------------------------------------------------------------------------
+# Universal build environment
+#
+# mklive.sh/lib.sh are Void-native: they need the XBPS toolchain in $PATH
+# (xbps-uhelper computes the host arch; xbps-install provisions the build) and
+# they chroot + bind-mount.  On any other distribution `xbps-uhelper arch`
+# fails, HOSTARCH comes back empty, lib.sh's register_binfmt() then misreads a
+# NATIVE x86_64 build as a foreign-architecture one and aborts with the
+# misleading "qemu-x86_64 binary is missing" error -- even though a native
+# build needs no qemu at all.
+#
+# Rather than fail, run the build inside a Void userspace:
+#   auto (default)  podman/docker container if available, else a Void ROOTFS
+#                   chroot bootstrapped from the official tarball, else error
+#   container       require and use podman/docker
+#   chroot          require and use a bootstrapped Void ROOTFS chroot
+#   native          never wrap; run mklive here (valid only on Void Linux)
+#
+# `flash` is plain host shell (dd, sfdisk, mkfs.ext4, ext4 overlay init) and is
+# NOT wrapped, so it runs on any distribution.  `build --flash <dev>` builds in
+# the Void environment and then flashes on the host.
+# ---------------------------------------------------------------------------
+
+BUILD_ENV_IMAGE="${BUILD_ENV_IMAGE:-void-mklive:latest}"
+# Container network mode.  "host" (default) sidesteps resolver/NAT problems in
+# rootful podman's bridge network -- e.g. systemd-resolved's 127.0.0.53 stub, or
+# a LAN-only nameserver the bridge cannot reach -- which otherwise fail the
+# build with "Transient resolver failure".  The build only needs to reach the
+# Void mirrors.  Override if you need isolation (e.g. BUILD_ENV_NETWORK=none for
+# an offline build, or a custom network name).
+BUILD_ENV_NETWORK="${BUILD_ENV_NETWORK:-host}"
+BUILD_ENV_DIR="${BUILD_ENV_DIR:-$PWD/.void-buildenv}"
+BUILD_ENV_ROOTFS_BASE="${BUILD_ENV_ROOTFS_BASE:-https://repo-default.voidlinux.org/live/current}"
+
+# True when the XBPS toolchain mklive/lib.sh require is present in $PATH.
+_on_void() {
+    command -v xbps-uhelper >/dev/null 2>&1 &&
+    command -v xbps-install >/dev/null 2>&1 &&
+    command -v xbps-reconfigure >/dev/null 2>&1
+}
+
+# Print "podman" or "docker" (podman preferred) when one is in $PATH.
+_container_runtime() {
+    for _rt in podman docker; do
+        if command -v "$_rt" >/dev/null 2>&1; then
+            printf '%s\n' "$_rt"
+            unset _rt
+            return 0
+        fi
+    done
+    unset _rt
+    return 1
+}
+
+# GET a URL to stdout / to a file (curl or wget).
+_fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$1"
+    else
+        die "need curl or wget to bootstrap the Void build environment"
+    fi
+}
+
+_fetch_to() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --retry 3 -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -O "$2" "$1"
+    else
+        die "need curl or wget to bootstrap the Void build environment"
+    fi
+}
+
+# Print the newest void-<arch>-ROOTFS-*.tar.xz URL under $BUILD_ENV_ROOTFS_BASE.
+_rootfs_url() {
+    _url_list=$(_fetch "$BUILD_ENV_ROOTFS_BASE/" 2>/dev/null || true)
+    _file=$(printf '%s\n' "$_url_list" \
+        | grep -oE "void-$1-ROOTFS-[0-9]+\.tar\.xz" | sort -u | tail -n1)
+    [ -n "$_file" ] || die "no void-$1 ROOTFS tarball found at $BUILD_ENV_ROOTFS_BASE"
+    printf '%s/%s\n' "$BUILD_ENV_ROOTFS_BASE" "$_file"
+    unset _url_list _file
+}
+
+# Minimal Void packages a from-scratch ROOTFS needs to run mklive here: the
+# tools lib.sh declares (cp/echo/cat/printf/which/mountpoint/mount/umount/
+# modprobe) plus what this wrapper and mklive invoke directly (findutils, awk,
+# sed, grep, tar, xz, readlink, and the ISO filesystem tools mkfs.vfat/ext3).
+_chroot_pkgs() {
+    printf '%s' "bash coreutils findutils gawk sed grep tar xz which util-linux kmod e2fsprogs dosfstools"
+}
+
+# Mount the pseudo-filesystems a Void ROOTFS needs (/dev /proc /sys ...) if not
+# already mounted.  Errors are non-fatal: the caller still tries to run.
+_env_mount_pseudo() {
+    _r="$1"
+    for _d in dev dev/pts dev/shm proc sys; do
+        mkdir -p "$_r/$_d"
+        if ! mountpoint -q "$_r/$_d"; then
+            if mount --rbind "/$_d" "$_r/$_d" 2>/dev/null; then
+                mount --make-rslave "$_r/$_d" 2>/dev/null || true
+            fi
+        fi
+    done
+    unset _r _d
+}
+
+_env_umount_pseudo() {
+    _r="$1"
+    for _d in sys proc dev/shm dev/pts dev; do
+        umount -R "$_r/$_d" 2>/dev/null || umount -l "$_r/$_d" 2>/dev/null || true
+    done
+    unset _r _d
+}
+
+# Ensure a Void ROOTFS for the HOST arch exists (download, extract and provision
+# once) and print its path to stdout; all progress goes to stderr so the path
+# can be captured with $(...).
+_ensure_rootfs() {
+    _arch=$(uname -m)
+    _root="$BUILD_ENV_DIR/rootfs-$_arch"
+    if [ -x "$_root/usr/bin/xbps-uhelper" ] && [ -e "$_root/.void-buildenv-ready" ]; then
+        printf '%s\n' "$_root"
+        unset _arch _root
+        return 0
+    fi
+    _url=$(_rootfs_url "$_arch")
+    _tb="$BUILD_ENV_DIR/$(basename "$_url")"
+    mkdir -p "$BUILD_ENV_DIR"
+    if [ ! -s "$_tb" ]; then
+        echo "==> downloading Void ROOTFS ($_arch): $(basename "$_url")" >&2
+        _fetch_to "$_url" "$_tb"
+    fi
+    if [ ! -x "$_root/usr/bin/xbps-uhelper" ]; then
+        echo "==> extracting Void ROOTFS to $_root" >&2
+        mkdir -p "$_root"
+        tar -xf "$_tb" -C "$_root"
+        [ -x "$_root/usr/bin/xbps-uhelper" ] || die "ROOTFS bootstrap failed: no xbps-uhelper in $_root"
+    fi
+    if [ ! -e "$_root/.void-buildenv-ready" ]; then
+        echo "==> provisioning build tools inside the ROOTFS (one-time)" >&2
+        [ -f /etc/resolv.conf ] && cp -f /etc/resolv.conf "$_root/etc/resolv.conf" 2>/dev/null || true
+        # Everything below talks to the user, not to the caller: this function's
+        # stdout is captured by $(...) for the ROOTFS path, so it must stay clean.
+        {
+            _env_mount_pseudo "$_root"
+            # The published ROOTFS can predate the current repository, whose
+            # metadata the bundled xbps may refuse to process ("The 'xbps'
+            # package must be updated").  Update xbps itself first, then the
+            # full system upgrade.
+            chroot "$_root" /usr/bin/xbps-install -Suy xbps || {
+                _env_umount_pseudo "$_root"
+                die "updating xbps inside the ROOTFS failed"
+            }
+            chroot "$_root" /usr/bin/xbps-install -Suy || {
+                _env_umount_pseudo "$_root"
+                die "xbps-install -Suy failed while provisioning the ROOTFS"
+            }
+            # shellcheck disable=SC2046
+            chroot "$_root" /usr/bin/xbps-install -y $(_chroot_pkgs) || {
+                _env_umount_pseudo "$_root"
+                die "provisioning the ROOTFS failed"
+            }
+            _env_umount_pseudo "$_root"
+        } 1>&2
+        : > "$_root/.void-buildenv-ready"
+    fi
+    printf '%s\n' "$_root"
+    unset _arch _root _url _tb
+}
+
+# Print the value of an option given as "--opt val" or "--opt=val".
+_opt_value() {
+    _want="$1"; shift
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            "$_want") shift; [ "$#" -gt 0 ] && { printf '%s\n' "$1"; unset _want; return 0; } ;;
+            "$_want"=*) printf '%s\n' "${1#*=}"; unset _want; return 0 ;;
+        esac
+        shift
+    done
+    unset _want
+    return 1
+}
+
+# True when a bare flag token is present in the argument list.
+_has_flag() {
+    _f="$1"; shift
+    for _a in "$@"; do
+        [ "$_a" = "$_f" ] && { unset _f _a; return 0; }
+    done
+    unset _f _a
+    return 1
+}
+
+# Print the package-cache directory that must be visible inside the environment,
+# when it lives OUTSIDE the project directory (otherwise it is already bound).
+_env_cache_bind() {
+    _carg=$(_opt_value --cache "$@" || true)
+    if [ -n "$_carg" ]; then
+        _cdir=$(readlink -f "$_carg" 2>/dev/null || printf '%s\n' "$_carg")
+    else
+        _cdir=$(_cache_resolve "" no)
+    fi
+    case "$_cdir" in
+        ""|"$PWD"|"$PWD"/*) : ;;
+        *) [ -d "$_cdir" ] || mkdir -p "$_cdir" 2>/dev/null || true
+           printf '%s\n' "$_cdir" ;;
+    esac
+    unset _carg _cdir
+}
+
+# Run the build inside the Void container image, built from container/Containerfile
+# on first use.  --privileged is required: mklive chroots and does mount --rbind.
+_run_container() {
+    _rt="$1"; shift
+    if ! "$_rt" image inspect "$BUILD_ENV_IMAGE" >/dev/null 2>&1; then
+        echo "==> building Void build-container image: $BUILD_ENV_IMAGE"
+        "$_rt" build --network "$BUILD_ENV_NETWORK" -t "$BUILD_ENV_IMAGE" "$PWD/container" \
+            || die "failed to build $BUILD_ENV_IMAGE from $PWD/container"
+    fi
+    # mklive sets up the EFI .img files with losetup.  A container's /dev is a
+    # snapshot taken when the container starts, and /dev/loop* only exist once
+    # the loop module is loaded on the HOST -- mklive's own `modprobe loop` runs
+    # inside the container, too late to appear in that snapshot (losetup then
+    # fails with 'device node /dev/loop0 (7:0) is lost').  Load it here so podman
+    # exposes the loop devices to the build.
+    modprobe -q loop 2>/dev/null || :
+    _tty=
+    if [ -t 0 ] && [ -t 1 ]; then _tty="-it"; fi
+    echo "==> building inside Void container ($_rt) ..."
+    # shellcheck disable=SC2086
+    "$_rt" run --rm ${_tty} --privileged --network "$BUILD_ENV_NETWORK" \
+        -v "$PWD:$PWD" ${_ENV_EXTRA_BINDS_V:-} \
+        -w "$PWD" \
+        -e VOID_ENV_ACTIVE=yes -e VOID_NO_FLASH=yes \
+        "$BUILD_ENV_IMAGE" \
+        ./voidlive-build-persist.sh build "$@"
+    _rc=$?
+    unset _rt _tty
+    return "$_rc"
+}
+
+# Run the build inside a bootstrapped Void ROOTFS chroot.
+_run_chroot() {
+    _root=$(_ensure_rootfs)
+    _proj=$PWD
+    [ -f /etc/resolv.conf ] && cp -f /etc/resolv.conf "$_root/etc/resolv.conf" 2>/dev/null || true
+    echo "==> building inside Void ROOTFS chroot ($_root) ..."
+
+    # A plain chroot's / is not a mount point, but mklive builds the EFI loaders
+    # via xbps-uchroot, whose `mount --make-rprivate /` needs one (it fails with
+    # EINVAL: "Failed to mount / private").  Bind the ROOTFS onto itself so / is
+    # a mount point inside the chroot.
+    if ! mountpoint -q "$_root"; then
+        mount --bind "$_root" "$_root" 2>/dev/null || die "could not bind $_root onto itself"
+    fi
+
+    _env_mount_pseudo "$_root"
+    mkdir -p "$_root$_proj"
+    if ! mountpoint -q "$_root$_proj"; then
+        mount --bind "$_proj" "$_root$_proj" 2>/dev/null || die "could not bind $_proj into the ROOTFS"
+    fi
+    for _b in ${_ENV_EXTRA_BINDS:-}; do
+        mkdir -p "$_root$_b"
+        if ! mountpoint -q "$_root$_b"; then
+            mount --bind "$_b" "$_root$_b" 2>/dev/null || true
+        fi
+    done
+
+    _rc=0
+    # The single-quoted program is a literal sh script executed inside the
+    # chroot; $1/$@ must NOT expand here, so SC2016 is intentional.
+    # shellcheck disable=SC2016
+    chroot "$_root" /bin/sh -c \
+        'cd "$1" || exit 1; shift; VOID_ENV_ACTIVE=yes VOID_NO_FLASH=yes; export VOID_ENV_ACTIVE VOID_NO_FLASH; exec ./voidlive-build-persist.sh build "$@"' \
+        sh "$_proj" "$@" || _rc=$?
+
+    for _b in ${_ENV_EXTRA_BINDS:-}; do
+        umount -R "$_root$_b" 2>/dev/null || umount -l "$_root$_b" 2>/dev/null || true
+    done
+    umount -R "$_root$_proj" 2>/dev/null || umount -l "$_root$_proj" 2>/dev/null || true
+    _env_umount_pseudo "$_root"
+    umount "$_root" 2>/dev/null || umount -l "$_root" 2>/dev/null || true
+    unset _root _proj _b
+    return "$_rc"
+}
+
+# Off-Void build wrapper: choose an environment, run the build there, then do a
+# requested --flash on the HOST (flash is distribution-neutral).
+_build_via_env() {
+    [ "$(id -u)" -eq 0 ] || die "the Void build environment must run as root (use sudo)"
+
+    _env_flash=$(_opt_value --flash "$@" || true)
+    _env_overlay=$(_opt_value --overlay-size-mib "$@" || true)
+    _env_cache=$(_opt_value --cache "$@" || true)
+    _env_seed=no
+    _has_flag --seed-cache "$@" && _env_seed=yes
+
+    _ENV_EXTRA_BINDS=$(_env_cache_bind "$@")
+    _ENV_EXTRA_BINDS_V=
+    for _b in ${_ENV_EXTRA_BINDS:-}; do
+        case "$_b" in *[[:space:]]*) die "refusing to wrap: path contains whitespace ($_b)";; esac
+        _ENV_EXTRA_BINDS_V="$_ENV_EXTRA_BINDS_V -v $_b:$_b"
+    done
+    case "$PWD" in *[[:space:]]*) die "refusing to wrap: project path contains whitespace ($PWD)";; esac
+
+    case "$BUILD_ENV_MODE" in
+        container)
+            _rt=$(_container_runtime) || die "--build-env container: no podman or docker in \$PATH"
+            _run_container "$_rt" "$@"
+            ;;
+        chroot)
+            _run_chroot "$@"
+            ;;
+        *)
+            _rt=$(_container_runtime || true)
+            if [ -n "$_rt" ]; then
+                _run_container "$_rt" "$@"
+            else
+                echo "NOTE: no podman/docker found; using a bootstrapped Void ROOTFS chroot."
+                _run_chroot "$@"
+            fi
+            ;;
+    esac
+    _rc=$?
+    [ "$_rc" -eq 0 ] || exit "$_rc"
+
+    if [ -n "$_env_flash" ]; then
+        _dev=$(readlink -f "$_env_flash" 2>/dev/null || printf '%s\n' "$_env_flash")
+        OVERLAY_SIZE_MIB="${_env_overlay:-$OVERLAY_SIZE_MIB}"
+        SEED_CACHE="$_env_seed"
+        CACHE_DIR="${_env_cache:-}"
+        if [ -n "$_env_cache" ]; then CACHE_EXPLICIT=yes; else CACHE_EXPLICIT=no; fi
+        export OVERLAY_SIZE_MIB SEED_CACHE CACHE_DIR CACHE_EXPLICIT
+        echo "==> flashing built image on the host ..."
+        flash "$_dev"
+    fi
+    unset _env_flash _env_overlay _env_cache _env_seed _rt _b _dev _rc _ENV_EXTRA_BINDS
+}
+
 build() {
     [ -x ./mkiso.sh ] || die "mkiso.sh not found"
+
+    # --- select the build environment (see the helpers above) ---------------
+    BUILD_ENV_MODE="${VOID_BUILD_ENV:-auto}"
+    _be_prev=
+    for _be_a in "$@"; do
+        if [ "$_be_prev" = --build-env ]; then
+            BUILD_ENV_MODE="$_be_a"; _be_prev=; continue
+        fi
+        case "$_be_a" in
+            --build-env) _be_prev=--build-env ;;
+            --build-env=*) BUILD_ENV_MODE="${_be_a#*=}" ;;
+        esac
+    done
+    unset _be_prev _be_a
+    case "$BUILD_ENV_MODE" in
+        auto|container|chroot|native) : ;;
+        *) die "unknown --build-env mode '$BUILD_ENV_MODE' (use auto|container|chroot|native)" ;;
+    esac
+    if [ "${VOID_ENV_ACTIVE:-no}" != yes ]; then
+        _be_wrap=yes
+        case "$BUILD_ENV_MODE" in
+            native) _be_wrap=no ;;
+            auto) if _on_void; then _be_wrap=no; fi ;;
+        esac
+        if [ "$_be_wrap" = yes ]; then
+            _build_via_env "$@"
+            return $?
+        fi
+        if ! _on_void; then
+            die "no Void XBPS toolchain on this host (missing xbps-uhelper/xbps-install/xbps-reconfigure).
+       mklive.sh/lib.sh require it; without it a native build is misdetected as
+       foreign-architecture and fails with a bogus 'qemu-x86_64 missing' error.
+       Re-run without '--build-env native' to build in a container or Void chroot."
+        fi
+    fi
+    unset _be_wrap
 
     PERSISTENT_OVERLAY=no
     FLASH_DEV=
@@ -553,6 +945,14 @@ build() {
             --grub) BOOTLOADER="grub"; shift ;;
             --limine) BOOTLOADER="limine"; shift ;;
             --both) BOOTLOADER="both"; shift ;;
+            # --build-env was already validated/consumed at the top of build();
+            # this case only stops it from leaking through to mklive.sh.
+            --build-env)
+                [ "$#" -ge 2 ] || die "--build-env requires a value"
+                BUILD_ENV_MODE="$2"
+                shift 2
+                ;;
+            --build-env=*) BUILD_ENV_MODE="${1#*=}"; shift ;;
             *) break ;;
         esac
     done
@@ -588,7 +988,7 @@ build() {
     GREETER_ARGS=
     [ "$GREETER" = auto ] || GREETER_ARGS="-g $GREETER"
 
-    if [ -n "$FLASH_DEV" ]; then
+    if [ -n "$FLASH_DEV" ] && [ "${VOID_NO_FLASH:-no}" != yes ]; then
         echo "==> building image ($DESKTOP${GREETER:+, greeter $GREETER}) ..."
         if ./mkiso.sh -b "$DESKTOP" $GREETER_ARGS -- -x "$PWD/postsetup.sh" -I "$PWD/includes" -c "$CACHE_DIR" $MKLIVE_EXTRA "$@"; then
             :
