@@ -14,6 +14,8 @@ This repository contains several utilities:
   a rootfs for a particular platform
 * [*mkimage.sh*](#mkimagesh) - The Void Linux image generator for ARM platforms
 * [*mknet.sh*](#mknetsh) - Script to generate netboot tarballs for Void
+* [*voidlive-build-persist.sh*](#building-on-non-void-hosts) - Builds/flashes ISOs on non-Void hosts,
+  on Void Linux or via a Void container / chroot (also supports persistent overlays)
 * *installer.sh* - The Void Linux el-cheapo installer for x86
 * *release.sh* - interacts with GitHub CI to generate and sign images for releases
 
