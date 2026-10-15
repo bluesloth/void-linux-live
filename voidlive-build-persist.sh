@@ -539,8 +539,7 @@ _on_void() {
 # Print "podman" or "docker" (podman preferred) when one is in $PATH.
 _container_runtime() {
     for _rt in podman docker; do
-        if command -v "$_rt" >/dev/null 2>&1 && \
-           "$_rt" info >/dev/null 2>&1; then
+        if command -v "$_rt" >/dev/null 2>&1; then
             printf '%s\n' "$_rt"
             unset _rt
             return 0
@@ -715,7 +714,7 @@ _run_container() {
     _rt="$1"; shift
     if ! "$_rt" image inspect "$BUILD_ENV_IMAGE" >/dev/null 2>&1; then
         echo "==> building Void build-container image: $BUILD_ENV_IMAGE"
-        "$_rt" build --network "$BUILD_ENV_NETWORK" -f "$PWD/container/Containerfile" -t "$BUILD_ENV_IMAGE" "$PWD/container" \
+        "$_rt" build --network "$BUILD_ENV_NETWORK" -t "$BUILD_ENV_IMAGE" "$PWD/container" \
             || die "failed to build $BUILD_ENV_IMAGE from $PWD/container"
     fi
     # mklive sets up the EFI .img files with losetup.  A container's /dev is a
@@ -727,21 +726,16 @@ _run_container() {
     modprobe -q loop 2>/dev/null || :
     _tty=
     if [ -t 0 ] && [ -t 1 ]; then _tty="-it"; fi
-    # Docker keeps a container-private /dev even under --privileged, so bind the
-    # host's /dev explicitly there (matching the CI container setup); podman
-    # already exposes the host device nodes.
-    _dev_bind=
-    if [ "$_rt" = docker ]; then _dev_bind="-v /dev:/dev"; fi
     echo "==> building inside Void container ($_rt) ..."
     # shellcheck disable=SC2086
     "$_rt" run --rm ${_tty} --privileged --network "$BUILD_ENV_NETWORK" \
-        -v "$PWD:$PWD" ${_dev_bind} ${_ENV_EXTRA_BINDS_V:-} \
+        -v "$PWD:$PWD" ${_ENV_EXTRA_BINDS_V:-} \
         -w "$PWD" \
         -e VOID_ENV_ACTIVE=yes -e VOID_NO_FLASH=yes \
         "$BUILD_ENV_IMAGE" \
         ./voidlive-build-persist.sh build "$@"
     _rc=$?
-    unset _rt _tty _dev_bind
+    unset _rt _tty
     return "$_rc"
 }
 
@@ -1171,7 +1165,7 @@ flash() {
     LIVE_UUID=$(blkid -s UUID -o value "$LIVE_PART" 2>/dev/null || true)
 
     # The ISO's own partition table already has entries (1=ISO9660 and the EFI
-    # images: 2=limine_uefi, 3=grub_uefi for -B both, Limine first). The new
+    # images: 2=grub_uefi, 3=limine_uefi for -B both, GRUB first). The new
     # overlay is APPENDED after them, so its slot is table_count+1, not a
     # hardcoded 3 (hardcoding 3 used to clobber the limine EFI partition on
     # -B both images). An MBR table holds at most 4 primaries; the hybrid ISOs

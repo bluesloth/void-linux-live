@@ -29,7 +29,7 @@ usage() {
 	               lightdm-gtk, lightdm-slick, cosmic-greeter, or none
 	 -B <bootloader>
 	               EFI bootloader choice: grub, limine, or both (default: both
-	               on x86 -- Limine first, then grub; grub on aarch64). BIOS
+	               on x86 -- GRUB first, then limine; grub on aarch64). BIOS
 	               always uses syslinux
 	 -d <date>     Override the datestamp on the generated image (YYYYMMDD format)
 	 -t <arch-date-variant>
@@ -113,7 +113,7 @@ setup_pipewire() {
 # ---------------------------------------------------------------------------
 # Desktop-environment specific extras.
 #
-# PINNED-INSTALLER: Beta-v2.9.92 83ece9384ef142de673fb4c098b2cdec117121dc08798d2cc157209e65d855ce
+# PINNED-INSTALLER: Beta-v2.9.93 6e9a1a66ce541113a21ec48d31ff5795723127bbb376ef326c6ca4c5ebe1ecba
 #   The per-DE gates below mirror the Installer's Stage-2 branches, and the
 #   Installer artifact itself is what this fork SHIPS: `installer.sh` in this
 #   tree is the public code-only copy of Void_Linux_Installer.sh Beta-v2.9.92

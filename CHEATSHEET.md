@@ -292,10 +292,6 @@ with the project mounted at the same path; `--cache` and the output ISO resolve
 identically inside and out. Cross-arch builds (target ≠ host) additionally need
 `qemu-user-static` + binfmt on the host.
 
-Docker is fully supported in addition to Podman.  Both backends build from
-`container/Containerfile`; the wrapper prefers Podman by default when both are
-installed and binds the host `/dev` under Docker so loop devices remain visible.
-
 ## Common one-shot combos
 
 ```sh

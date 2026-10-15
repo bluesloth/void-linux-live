@@ -14,8 +14,6 @@ This repository contains several utilities:
   a rootfs for a particular platform
 * [*mkimage.sh*](#mkimagesh) - The Void Linux image generator for ARM platforms
 * [*mknet.sh*](#mknetsh) - Script to generate netboot tarballs for Void
-* [*voidlive-build-persist.sh*](#building-on-non-void-hosts) - Builds/flashes ISOs on non-Void hosts,
-  on Void Linux or via a Void container / chroot (also supports persistent overlays)
 * *installer.sh* - The Void Linux el-cheapo installer for x86
 * *release.sh* - interacts with GitHub CI to generate and sign images for releases
 
@@ -94,12 +92,6 @@ The container runs `--privileged` (mklive chroots and bind-mounts) with the
 project directory mounted at the same path, so `--cache` and the output ISO
 resolve identically inside and outside. The first container build / ROOTFS
 bootstrap needs network access and takes longer; later builds reuse it.
-
-Docker is fully supported in addition to Podman.  Both backends build the image
-from `container/Containerfile`; the wrapper selects Podman by default when both
-are installed (falling back to whichever backend is actually usable) and binds
-the host `/dev` under Docker, which keeps a container-private `/dev`,
-so the ISO build's loop devices remain available.
 
 `flash` is never wrapped — it is plain `dd`/`sfdisk`/`mkfs.ext4` and runs on the
 host, so `build --flash <dev>` builds in the Void environment and then flashes
@@ -279,11 +271,11 @@ login screen is never a bare black rectangle.
 ## Bootloaders
 
 BIOS boots always use syslinux. The EFI bootloader is selectable via
-`-B <grub|limine|both>` (default: `both` — Limine first, then GRUB, plus
+`-B <grub|limine|both>` (default: `both` — GRUB first, then Limine, plus
 syslinux for BIOS):
 
 ```
-sudo ./voidlive-build-persist.sh build                    # Limine + GRUB (EFI) + syslinux (BIOS)
+sudo ./voidlive-build-persist.sh build                    # GRUB + Limine (EFI) + syslinux (BIOS)
 sudo ./voidlive-build-persist.sh build -B grub            # GRUB (EFI) + syslinux (BIOS)
 sudo ./voidlive-build-persist.sh build -B limine          # Limine (EFI) + syslinux (BIOS)
 ```
@@ -328,7 +320,7 @@ OPTIONS
                lightdm-gtk, lightdm-slick, cosmic-greeter, or none
  -B <bootloader>
                EFI bootloader choice: grub, limine, or both (default: both
-               on x86 -- Limine first, then grub; grub on aarch64). BIOS
+               on x86 -- GRUB first, then limine; grub on aarch64). BIOS
                always uses syslinux
  -d <date>     Override the datestamp on the generated image (YYYYMMDD format)
  -t <arch-date-variant>
@@ -355,8 +347,8 @@ OPTIONS
  -a <arch>          Set XBPS_ARCH in the ISO image
  -b <system-pkg>    Set an alternative base package (default: base-system)
  -B <grub|limine|both>
-                    Bootloader for EFI (default: both on x86 -- Limine
-                    first, then grub; grub on aarch64). BIOS always uses
+                    Bootloader for EFI (default: both on x86 -- GRUB
+                    first, then limine; grub on aarch64). BIOS always uses
                     syslinux. 'both' includes grub and limine
  -r <repo>          Use this XBPS repository. May be specified multiple times
  -c <cachedir>      Use this XBPS cache directory (default: ./xbps-cachedir-<arch>)

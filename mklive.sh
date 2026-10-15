@@ -83,8 +83,8 @@ usage() {
 	 -a <arch>          Set XBPS_ARCH in the ISO image
 	 -b <system-pkg>    Set an alternative base package (default: base-system)
 	 -B <grub|limine|both>
-	                    Bootloader for EFI (default: both on x86 -- Limine
-	                    first, then grub; grub on aarch64). BIOS always uses
+	                    Bootloader for EFI (default: both on x86 -- GRUB
+	                    first, then limine; grub on aarch64). BIOS always uses
 	                    syslinux. 'both' includes grub and limine
 	 -r <repo>          Use this XBPS repository. May be specified multiple times
 	 -c <cachedir>      Use this XBPS cache directory (default: ./xbps-cachedir-<arch>)
@@ -679,12 +679,12 @@ case "$TARGET_ARCH" in
         case "$BOOTLOADER" in
             grub)   BOOTLOADERS=(syslinux grub) ;;
             limine) BOOTLOADERS=(syslinux limine) ;;
-            # 'both' lists Limine FIRST so its EFI image becomes the earlier
+            # 'both' lists GRUB FIRST so its EFI image becomes the earlier
             # El Torito / partition entry: on removable media UEFI boots the
-            # first \EFI\BOOT\BOOTX64.EFI it finds, so Limine is the default
-            # entry with GRUB as the fallback. -B grub / -B limine still build
+            # first \EFI\BOOT\BOOTX64.EFI it finds, so GRUB is the default
+            # entry with Limine as the fallback. -B grub / -B limine still build
             # a single bootloader exactly as before.
-            both)   BOOTLOADERS=(syslinux limine grub) ;;
+            both)   BOOTLOADERS=(syslinux grub limine) ;;
             *)      die "-B must be one of: grub, limine, both (got: $BOOTLOADER)" ;;
         esac
 		TARGET_PKGS+=(syslinux memtest86+)
