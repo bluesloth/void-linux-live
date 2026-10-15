@@ -93,6 +93,12 @@ project directory mounted at the same path, so `--cache` and the output ISO
 resolve identically inside and outside. The first container build / ROOTFS
 bootstrap needs network access and takes longer; later builds reuse it.
 
+Docker is fully supported in addition to Podman.  Both backends build the image
+from `container/Containerfile`; the wrapper selects Podman by default when both
+are installed (falling back to whichever backend is actually usable) and binds
+the host `/dev` under Docker, which keeps a container-private `/dev`,
+so the ISO build's loop devices remain available.
+
 `flash` is never wrapped — it is plain `dd`/`sfdisk`/`mkfs.ext4` and runs on the
 host, so `build --flash <dev>` builds in the Void environment and then flashes
 on the host. The environment can also be tuned with the `BUILD_ENV_IMAGE`,
