@@ -139,11 +139,12 @@ mkdir -p "$ROOTFS/usr/lib/dracut/modules.d/05netmenu"
 cp dracut/netmenu/* "$ROOTFS/usr/lib/dracut/modules.d/05netmenu/"
 
 # The netmenu can directly launch the manual installer from the
-# initrd.  This is the same installer that's on the live media with
-# all its quirks, oddities, and wierdness.  It's included here for
-# places where you might have a lab network and need to run manual
-# installs from the network.
-cp installer.sh "$ROOTFS/usr/lib/dracut/modules.d/05netmenu/"
+# initrd.  This is the same Void_Linux_Installer that's on the live
+# media: it is fetched from the public repo at build time (lib.sh
+# installer_fetch), so the netboot image ships the current installer
+# too.  It's included here for places where you might have a lab
+# network and need to run manual installs from the network.
+installer_fetch "$ROOTFS/usr/lib/dracut/modules.d/05netmenu/installer.sh"
 
 # Of course with a PXE environment unattended installs are the norm.
 # The autoinstaller is loaded as a very high priority dracut module

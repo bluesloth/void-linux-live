@@ -74,6 +74,8 @@ install() {
     # doing this from dracut's installation function, but this is the
     # last place that file really exists 'on disk' in the sense that
     # we can modify it, so this change is applied here.
+    # ($moddir/installer.sh is placed by mknet.sh, which fetches the
+    # Void_Linux_Installer from the public repo at build time.)
     sed -i '/Packages from ISO image/d' "$moddir/installer.sh"
 
     # The system doesn't have a real init up so the reboot is going to

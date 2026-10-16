@@ -12,7 +12,9 @@ This repository contains several utilities:
   a rootfs for a particular platform
 * [*mkimage.sh*](#mkimagesh) - The Void Linux image generator for ARM platforms
 * [*mknet.sh*](#mknetsh) - Script to generate netboot tarballs for Void
-* *installer.sh* - The Void Linux el-cheapo installer for x86
+* *Void_Linux_Installer* - The Void Linux installer, fetched from
+  [bluesloth/void-linux-installer](https://github.com/bluesloth/void-linux-installer)
+  at build time (not vendored; see `lib.sh` `installer_fetch`)
 * *release.sh* - interacts with GitHub CI to generate and sign images for releases
 
 ### Workflow

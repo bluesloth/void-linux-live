@@ -1,10 +1,10 @@
 # Tracking upstream (void-mklive)
 
 This tree is a customized copy of
-[void-linux/void-mklive](https://github.com/void-linux/void-mklive). The shared
-files (`lib.sh`, `installer.sh`, the `dracut/`, `grub/`, `container/` trees, …)
-are byte-for-byte upstream; the differences are this project's own files plus a
-handful of patched upstream files.
+[void-linux/void-mklive](https://github.com/void-linux/void-mklive). Most shared
+files (the `dracut/`, `grub/`, `container/` trees, …) are byte-for-byte
+upstream; the differences are this project's own files plus a handful of patched
+upstream files — and one deleted (`installer.sh`).
 
 ## Status / base
 
@@ -32,7 +32,11 @@ git merge upstream/master
 | --- | --- |
 | `mklive.sh` | Limine EFI boot, opt-in persistent overlay (`-R`), DE/greeter plumbing |
 | `mkiso.sh` | per-DE flavors, greeter selection, DE extras |
+| `lib.sh` | `installer_fetch` — fetch the `Void_Linux_Installer` at build time |
+| `mknet.sh` | fetch the installer (build-time) instead of copying `installer.sh` |
+| `dracut/netmenu/module-setup.sh` | comment only |
 | `dracut/vmklive/display-manager-autologin.sh` | SDDM session marker |
+| `installer.sh` | **deleted** — Live fetches the Installer at build time; do **not** restore upstream's el-cheapo installer |
 | `README.md`, `README.md.in` | project docs |
 | `.gitignore` | ignores `build.log*` / `build.status` |
 
@@ -49,6 +53,9 @@ extra `keys/*`.
 # plain `bash -n` reports as a syntax error even though the script runs fine.
 bash -O extglob -n mkiso.sh mklive.sh lib.sh
 sh -n postsetup.sh
+# upstream re-adds installer.sh on merge: keep it deleted (Live fetches the
+# Installer at build time — see lib.sh installer_fetch):
+git rm --ignore-unmatch installer.sh
 # then rebuild an ISO and boot it (the real test)
 ```
 

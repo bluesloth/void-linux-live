@@ -11,6 +11,22 @@ commit lists the underlying source commits.
 
 ## Unreleased
 
+### Interop
+
+- **[INSTALLER-FETCH]** Stop vendoring the Installer; fetch it from the public
+  repo at build time. `lib.sh` gains `installer_fetch` (repo/ref configurable via
+  `INSTALLER_REPO` / `INSTALLER_REF`, default
+  `bluesloth/void-linux-installer` @ `main`), and both `mkiso.sh`
+  (`include_installer`) and `mknet.sh` use it — so the live ISO **and** the
+  netboot image always ship the current Installer with no pinned copy to lag
+  behind. The fetched script is syntax-checked and its resolved `SCRIPT_VERSION`
+  + sha256 are printed and recorded at `/etc/void-linux-live/installer-ref` on
+  the live image. The tracked `installer.sh` is **deleted**; a failed fetch
+  aborts the build (no fallback). Pin a release for a reproducible build with
+  `INSTALLER_REF=v2.9.95`. The Installer→Live seam is now a fetch declaration
+  (`# INSTALLER-REF:` in `mkiso.sh`) instead of a version+SHA pin
+  (`coordination/PINS.md` §3.1).
+
 ### Packages
 
 - **[ALL-DE-EXTRAS]** Give the live image app parity with void-installer's

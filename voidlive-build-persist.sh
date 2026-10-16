@@ -114,7 +114,8 @@ need_cmd() {
 # plus mkiso's live-only variants (base/enlightenment/lxde/xfce-wayland).  The
 # canonical lists live in coordination/vocabulary.sh and are cross-checked
 # against both projects by coordination/check-pins.sh (SUPERVISION-CONTRACT §5);
-# the gates these drive mirror PINNED-INSTALLER in mkiso.sh.
+# the gates these drive mirror the Installer fetched at build time (mkiso.sh
+# INSTALLER-REF; lib.sh installer_fetch).
 DESKTOP_CHOICES="kde gnome cinnamon xfce mate lxqt cosmic none base enlightenment lxde xfce-wayland"
 GREETER_CHOICES="auto sddm gdm lightdm lightdm-gtk lightdm-slick cosmic-greeter none"
 

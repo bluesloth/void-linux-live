@@ -66,26 +66,46 @@ cleanup() {
     rm -rf "$INCLUDEDIR"
 }
 
-# installer.sh in this tree is the public code-only copy of the pinned
-# Installer artifact (PINNED-INSTALLER below): Void_Linux_Installer.sh
-# Beta-v2.9.94 @ ff367267..., shipped as /usr/bin/void-installer on the live
-# image. The upstream script carries an @@MKLIVE_VERSION@@ placeholder; this
-# one does not, so the sed below is a no-op kept for upstream compatibility.
+# ---------------------------------------------------------------------------
+# Void_Linux_Installer (shipped as /usr/bin/void-installer).
+#
+# INSTALLER-REF: bluesloth/void-linux-installer main
+#
+# The Installer is NOT vendored in this tree: it is fetched from the public repo
+# at build time (lib.sh installer_fetch), so every build carries the current
+# installer and there is no pinned copy to lag behind.  Pin a release (or a
+# commit) for a reproducible build:  INSTALLER_REF=v2.9.95 ./mkiso.sh -b base
+#
+# The upstream script carries an @@MKLIVE_VERSION@@ placeholder; this project's
+# installer does not, so the sed below is a no-op kept for upstream
+# compatibility.  coordination/check-pins.sh verifies this seam and that no
+# installer.sh is tracked.
+# ---------------------------------------------------------------------------
 include_installer() {
-    if [ -x installer.sh ]; then
-        MKLIVE_VERSION="$(PROGNAME='' version)"
-        installer=$(mktemp)
-        sed "s/@@MKLIVE_VERSION@@/${MKLIVE_VERSION}/" installer.sh > "$installer"
-        install -Dm755 "$installer" "$INCLUDEDIR"/usr/bin/void-installer
-        rm "$installer"
-    else
-        echo installer.sh not found >&2
-        exit 1
-    fi
+    _installer=$(mktemp)
+    installer_fetch "$_installer"
+
+    MKLIVE_VERSION="$(PROGNAME='' version)"
+    sed "s/@@MKLIVE_VERSION@@/${MKLIVE_VERSION}/" "$_installer" > "$_installer.rendered"
+    install -Dm755 "$_installer.rendered" "$INCLUDEDIR"/usr/bin/void-installer
+
+    # Record exactly which installer this image ships.  INCLUDEDIR is copied into
+    # the rootfs by mklive, so this lands at /etc/void-linux-live/installer-ref.
+    _shipped_sha=$(sha256sum "$_installer.rendered" | awk '{print $1}')
+    mkdir -p "$INCLUDEDIR"/etc/void-linux-live
+    {
+        printf 'repo=%s\n'    "$INSTALLER_REPO"
+        printf 'ref=%s\n'     "$INSTALLER_REF"
+        printf 'version=%s\n' "$INSTALLER_VERSION"
+        printf 'sha256=%s\n'  "$_shipped_sha"
+        printf 'url=%s\n'     "$(installer_url)"
+    } > "$INCLUDEDIR"/etc/void-linux-live/installer-ref
+
+    rm -f "$_installer" "$_installer.rendered"
 }
 
 # ---------------------------------------------------------------------------
-# Surface the pinned Installer on the live desktop.
+# Surface the Installer on the live desktop.
 #
 # The image ships the Installer as /usr/bin/void-installer (see
 # include_installer above) but nothing on the live desktop points at it, so a
@@ -175,13 +195,15 @@ setup_pipewire() {
 # ---------------------------------------------------------------------------
 # Desktop-environment specific extras.
 #
-# PINNED-INSTALLER: Beta-v2.9.94 63bd3df96a344173f36ab125cea0762eb10e2ccd792db694dbeec71c3b1e981c
-#   The per-DE gates below mirror the Installer's Stage-2 branches, and the
-#   Installer artifact itself is what this fork SHIPS: `installer.sh` in this
-#   tree is the public code-only copy of Void_Linux_Installer.sh Beta-v2.9.94
-#   (sha256 ff3672674235a1adab27b2e824f10996cc96b47a3838b5841ea963e578d64f02),
-#   installed by include_installer() as /usr/bin/void-installer. Recorded in
-#   coordination/PINS.md §3.1; coordination/check-pins.sh verifies the SHAs.
+# GATES-INSTALLER-BASIS: Beta-v2.9.94 63bd3df96a344173f36ab125cea0762eb10e2ccd792db694dbeec71c3b1e981c
+#   The per-DE gates below mirror the Installer's Stage-2 branches; this is the
+#   installer version that mirroring was written against (not a pin — the
+#   Installer itself is fetched at build time, see INSTALLER-REF above / lib.sh
+#   installer_fetch).  The artifact itself is what this fork SHIPS: it is
+#   installed by include_installer() as /usr/bin/void-installer, so these
+#   branches are expected to be re-checked whenever the installer's Stage-2
+#   gates move.  Recorded in coordination/PINS.md §3.1;
+#   coordination/check-pins.sh verifies the fetch seam.
 #
 # void-installer (the installer shipped on the live image) applies a set of
 # per-DE "gates" at install time.  Several DE metapackages omit pieces the user
@@ -195,8 +217,8 @@ setup_pipewire() {
 # These helpers reproduce those gates in the LIVE environment: the packages are
 # added to the per-DE PKGS lists above, and the matching files/services are
 # dropped into the mklive include dir (copied into the rootfs by mklive after
-# packages are installed).  Keep them in sync with the pinned Installer
-# Stage-2 DE branches (PINNED-INSTALLER above).
+# packages are installed).  Keep them in sync with the Installer's
+# Stage-2 DE branches (GATES-INSTALLER-BASIS above).
 # ---------------------------------------------------------------------------
 
 # [USB-AUTOMOUNT] supervised udisks2 service for every graphical variant.
@@ -376,8 +398,8 @@ build_variant() {
     # [ALL-DE-EXTRAS] Unconditional app parity with void-installer.
     #
     # void-installer's Stage-2 "everyday roll-up" installs this set on EVERY
-    # desktop and profile regardless of DE (see PINNED-INSTALLER above;
-    # Void_Linux_Installer.sh Beta-v2.9.94, its unconditional
+    # desktop and profile regardless of DE (see GATES-INSTALLER-BASIS above;
+    # the Installer's unconditional
     #   `install_pkgs xdg-user-dirs xdg-utils xtools rsync git curl wget make
     #    binutils inotify-tools fastfetch chrony cronie bridge-utils
     #    smartmontools`

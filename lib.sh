@@ -315,6 +315,67 @@ set_cachedir() {
     : "${XBPS_CACHEDIR:=--cachedir=$PWD/xbps-cache/${XBPS_TARGET_ARCH}}"
 }
 
+# ---------------------------------------------------------------------------
+# Void_Linux_Installer: fetched from GitHub at build time.
+#
+# The live image (mkiso.sh) and the netboot image (mknet.sh) SHIP the
+# Void_Linux_Installer as /usr/bin/void-installer.  It is deliberately NOT
+# vendored in this tree: it is downloaded from the public repo at build time so
+# that every build carries the current installer, with no pinned copy to lag
+# behind.  For a reproducible build, pin a release (or a commit):
+#
+#     INSTALLER_REF=v2.9.95 ./mkiso.sh -b base
+#
+# The resolved version and SHA-256 are printed at build time and recorded on
+# the live image (mkiso.sh include_installer), so the installer a given ISO
+# shipped can always be identified after the fact.
+INSTALLER_REPO="${INSTALLER_REPO:-bluesloth/void-linux-installer}"
+INSTALLER_REF="${INSTALLER_REF:-main}"
+INSTALLER_BASENAME="${INSTALLER_BASENAME:-Void_Linux_Installer.sh}"
+INSTALLER_URL_BASE="${INSTALLER_URL_BASE:-https://raw.githubusercontent.com}"
+
+installer_url() {
+    printf '%s/%s/%s/%s\n' \
+        "$INSTALLER_URL_BASE" "$INSTALLER_REPO" "$INSTALLER_REF" "$INSTALLER_BASENAME"
+}
+
+installer_fetch() {
+    # installer_fetch <dest>
+    #   Download the installer to <dest> (mode 0755), sanity-check it, and set
+    #   INSTALLER_VERSION + INSTALLER_SHA256.  The build aborts on any failure —
+    #   there is deliberately no bundled fallback to fall back to.
+    _if_dest="$1"
+    _if_url="$(installer_url)"
+
+    if ! command -v curl >/dev/null 2>&1; then
+        printf 'FATAL: curl is required to fetch the Void_Linux_Installer (%s).\n' "$_if_url" >&2
+        exit 1
+    fi
+    if ! curl -fsSL --max-time 60 -o "$_if_dest" "$_if_url"; then
+        printf 'FATAL: could not fetch the Void_Linux_Installer from %s.\n' "$_if_url" >&2
+        printf '       Check network access, or set INSTALLER_REF=<tag|commit> to pin a release.\n' >&2
+        exit 1
+    fi
+    if command -v bash >/dev/null 2>&1; then
+        if ! bash -n "$_if_dest" 2>/dev/null; then
+            printf 'FATAL: the fetched Void_Linux_Installer failed a syntax check (%s).\n' "$_if_url" >&2
+            exit 1
+        fi
+    fi
+    chmod 0755 "$_if_dest"
+
+    INSTALLER_VERSION="$(sed -n 's/^SCRIPT_VERSION="\(.*\)"$/\1/p' "$_if_dest" | head -n1)"
+    INSTALLER_SHA256="$(sha256sum "$_if_dest" | awk '{print $1}')"
+    if [ -z "$INSTALLER_VERSION" ]; then
+        printf 'FATAL: could not read SCRIPT_VERSION from the fetched installer (%s).\n' "$_if_url" >&2
+        exit 1
+    fi
+
+    info_msg "Void_Linux_Installer ${INSTALLER_VERSION} (${INSTALLER_REPO}@${INSTALLER_REF})"
+    info_msg "  sha256 ${INSTALLER_SHA256}"
+    info_msg "  ${_if_url}"
+}
+
 rk33xx_flash_uboot() {
     local dir="$1"
     local dev="$2"
