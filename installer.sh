@@ -2,7 +2,7 @@
 set -eE
 set -o pipefail
 
-SCRIPT_VERSION="Beta-v2.9.92"
+SCRIPT_VERSION="Beta-v2.9.94"
 
 
 
@@ -4909,6 +4909,48 @@ install_pkgs xdg-user-dirs xdg-utils xtools rsync git curl wget make binutils in
 [ "$PROFILE_PRELOAD" = "true" ] && install_pkgs preload
 [ "$INSTALL_OCTOXBPS" = "true" ] && install_pkgs octoxbps
 
+if [ "$INSTALL_OCTOXBPS" = "true" ]; then
+mkdir -p /usr/share/polkit-1/actions /etc/polkit-1/rules.d
+cat > /usr/share/polkit-1/actions/99-octoxbps-check-nopass.policy << 'INNER_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<policyconfig>
+  <action id="org.freedesktop.policykit.pkexec.run-xbpsinstall-nopass-sy">
+    <description>Allow passwordless repository sync (-Sy) for OctoXBPS/local sessions</description>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/xbps-install</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">-Sy</annotate>
+  </action>
+  <action id="org.freedesktop.policykit.pkexec.run-xbpsinstall-nopass-syy">
+    <description>Allow passwordless forced repository sync (-Syy) for OctoXBPS/local sessions</description>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/xbps-install</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">-Syy</annotate>
+  </action>
+</policyconfig>
+INNER_EOF
+chmod 644 /usr/share/polkit-1/actions/99-octoxbps-check-nopass.policy
+if [ "$ACCOUNT_MODEL" != "debian" ]; then
+cat > /etc/polkit-1/rules.d/90-octoxbps-nopass.rules << 'INNER_EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.policykit.pkexec.run-xbpsinstall-nopass") === 0 &&
+        subject.isInGroup("wheel") &&
+        subject.active) {
+        return polkit.Result.YES;
+    }
+});
+INNER_EOF
+chmod 644 /etc/polkit-1/rules.d/90-octoxbps-nopass.rules
+fi
+fi
+
 if [ "$INSTALL_FLATPAK" = "true" ]; then
     install_pkgs flatpak fuse fuse3
     flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || \
@@ -7437,6 +7479,13 @@ if [ ! -f /var/log/firstboot.log ]; then
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database -q
     fi
+
+    if command -v snapper >/dev/null 2>&1 && [ -f /etc/snapper/configs/root ]; then
+        echo "==> Creating the baseline snapper snapshot (fully-provisioned system)..."
+        snapper --no-dbus -c root create --description "Baseline Automated System Installation" || \
+            echo "WARNING: baseline snapper snapshot failed — create one manually later with 'sudo snapper create -d \"Baseline Automated System Installation\"'." >&2
+    fi
+
     mkdir -p /var/log
     touch /var/log/firstboot.log
 fi
@@ -7604,14 +7653,7 @@ if [ "$BOOTLOADER" = "limine" ]; then
 fi
 
 if [ "$BOOTLOADER" = "grub" ]; then
-    [ -f /etc/grub.d/41_snapshots-btrfs ] && chmod -x /etc/grub.d/41_snapshots-btrfs
-fi
-snapper --no-dbus -c root create --description "Baseline Automated System Installation"
-if [ "$BOOTLOADER" = "grub" ]; then
-    [ -f /etc/grub.d/41_snapshots-btrfs ] && chmod +x /etc/grub.d/41_snapshots-btrfs
     grub-mkconfig -o /boot/grub/grub.cfg
-else
-    /usr/local/sbin/void-limine-write-conf
 fi
 CHROOT_EOF
 
@@ -7721,7 +7763,9 @@ else
     echo "${C_GRN}  3.${C_RST} GRUB is installed (with grub-btrfs snapshots). To update the menu:"
     echo "     ${C_BOLD}grub-mkconfig -o /boot/grub/grub.cfg${C_RST}"
 fi
-echo "${C_GRN}  4.${C_RST} A baseline snapper snapshot has already been created for the clean install."
+echo "${C_GRN}  4.${C_RST} A baseline snapper snapshot is taken on first boot, once the desktop"
+echo "     services are enabled — so it is a fully working, rollback-ready snapshot"
+echo "     of this clean install (not a pre-services console-only image)."
 echo "${C_GRN}  5.${C_RST} The exact choices + installer version that built this box are archived on it:"
 echo "     ${C_BOLD}/etc/void-installer/install-config${C_RST}  and  ${C_BOLD}/etc/void-installer/Void_Linux_Installer.sh${C_RST}"
 echo "     Quick record: ${C_BOLD}~/Documents/Void_Install.txt${C_RST} (installed user)"

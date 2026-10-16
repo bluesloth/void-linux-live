@@ -68,7 +68,7 @@ cleanup() {
 
 # installer.sh in this tree is the public code-only copy of the pinned
 # Installer artifact (PINNED-INSTALLER below): Void_Linux_Installer.sh
-# Beta-v2.9.92 @ 01c6248d..., shipped as /usr/bin/void-installer on the live
+# Beta-v2.9.94 @ ff367267..., shipped as /usr/bin/void-installer on the live
 # image. The upstream script carries an @@MKLIVE_VERSION@@ placeholder; this
 # one does not, so the sed below is a no-op kept for upstream compatibility.
 include_installer() {
@@ -113,11 +113,11 @@ setup_pipewire() {
 # ---------------------------------------------------------------------------
 # Desktop-environment specific extras.
 #
-# PINNED-INSTALLER: Beta-v2.9.93 6e9a1a66ce541113a21ec48d31ff5795723127bbb376ef326c6ca4c5ebe1ecba
+# PINNED-INSTALLER: Beta-v2.9.94 63bd3df96a344173f36ab125cea0762eb10e2ccd792db694dbeec71c3b1e981c
 #   The per-DE gates below mirror the Installer's Stage-2 branches, and the
 #   Installer artifact itself is what this fork SHIPS: `installer.sh` in this
-#   tree is the public code-only copy of Void_Linux_Installer.sh Beta-v2.9.92
-#   (sha256 01c6248d04a314db442dea952b9d6a8957e29c54388ca0608ea404b313c7e14c),
+#   tree is the public code-only copy of Void_Linux_Installer.sh Beta-v2.9.94
+#   (sha256 ff3672674235a1adab27b2e824f10996cc96b47a3838b5841ea963e578d64f02),
 #   installed by include_installer() as /usr/bin/void-installer. Recorded in
 #   coordination/PINS.md §3.1; coordination/check-pins.sh verifies the SHAs.
 #
@@ -315,7 +315,7 @@ build_variant() {
     #
     # void-installer's Stage-2 "everyday roll-up" installs this set on EVERY
     # desktop and profile regardless of DE (see PINNED-INSTALLER above;
-    # Void_Linux_Installer.sh Beta-v2.9.92, its unconditional
+    # Void_Linux_Installer.sh Beta-v2.9.94, its unconditional
     #   `install_pkgs xdg-user-dirs xdg-utils xtools rsync git curl wget make
     #    binutils inotify-tools fastfetch chrony cronie bridge-utils
     #    smartmontools`
