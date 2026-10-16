@@ -21,6 +21,18 @@ commit lists the underlying source commits.
   opt-in* apps (browsers, `cosmic-store`, flatpak, …) are deliberately not added
   — the live image stays lean there.
 
+### Live desktop
+
+- **[INSTALLER-DESKTOP]** Surface the pinned Installer on the live desktop.
+  `mkiso.sh` `setup_installer_desktop()` seeds `/etc/skel/Desktop` (copied into
+  the live user's home by the dracut `vmklive/adduser.sh` `useradd -m` at boot)
+  with `Void_Linux_Installer.sh` — a symlink to the single shipped copy,
+  `/usr/bin/void-installer`, so it stays the code-only strip and there is no
+  second copy of the artifact — plus an `Install Void Linux` launcher that runs
+  it as root in a terminal (`Terminal=true`; a `void-installer-launch` shim
+  prefers `pkexec`, falls back to `sudo`). Gated on `WANT_INSTALLER`
+  (x86_64/i686); no new pinned input.
+
 ## v1.1 — 2026-10-13
 
 Pin the Installer input, single-source the shared vocabulary, and ship the

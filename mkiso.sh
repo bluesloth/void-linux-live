@@ -84,6 +84,68 @@ include_installer() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Surface the pinned Installer on the live desktop.
+#
+# The image ships the Installer as /usr/bin/void-installer (see
+# include_installer above) but nothing on the live desktop points at it, so a
+# freshly-booted medium gives no sign the installer exists.  Seed two items:
+#
+#   Desktop/Void_Linux_Installer.sh      the Installer itself, visible on the
+#                                        desktop.  A symlink to the single
+#                                        shipped copy (/usr/bin/void-installer)
+#                                        — no second copy of the artifact, and
+#                                        it stays the code-only strip.
+#   Desktop/Install Void Linux.desktop   a launcher that runs it as root in a
+#                                        terminal.  The Installer requires root;
+#                                        Terminal=true asks the DE to supply the
+#                                        terminal, and void-installer-launch
+#                                        picks the privilege helper.
+#
+# The live user (anon, or live.user=) is created at boot by the dracut
+# vmklive/adduser.sh hook with `useradd -m`, which copies /etc/skel into the new
+# home.  /home/<user> does not exist at build time, so both items are seeded
+# through /etc/skel/Desktop.
+setup_installer_desktop() {
+    mkdir -p "$INCLUDEDIR"/etc/skel/Desktop "$INCLUDEDIR"/usr/local/sbin
+
+    ln -sf /usr/bin/void-installer \
+        "$INCLUDEDIR"/etc/skel/Desktop/Void_Linux_Installer.sh
+
+    # Elevation shim.  On the live image the login user is in wheel: the dracut
+    # adduser.sh hook grants it NOPASSWD sudo and the void-live polkit rule
+    # returns Result.YES for wheel.  Prefer pkexec (needs no sudoers.d entry),
+    # fall back to sudo, then run the Installer directly so its own root check
+    # reports the problem instead of the launcher failing silently.
+    cat > "$INCLUDEDIR"/usr/local/sbin/void-installer-launch << 'EOF'
+#!/bin/sh
+set -u
+if command -v pkexec >/dev/null 2>&1; then
+    exec pkexec /usr/bin/void-installer "$@"
+fi
+if command -v sudo >/dev/null 2>&1; then
+    exec sudo /usr/bin/void-installer "$@"
+fi
+exec /usr/bin/void-installer "$@"
+EOF
+    chmod 0755 "$INCLUDEDIR"/usr/local/sbin/void-installer-launch
+
+    cat > "$INCLUDEDIR"/etc/skel/Desktop/install-void-linux.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Install Void Linux
+GenericName=System Installer
+Comment=Repartition a disk and install Void Linux
+Exec=/usr/local/sbin/void-installer-launch
+Terminal=true
+Icon=drive-harddisk
+Categories=System;
+Keywords=install;installer;setup;void;
+EOF
+    chmod 0755 "$INCLUDEDIR"/etc/skel/Desktop/install-void-linux.desktop
+}
+
 setup_pipewire() {
     PKGS="$PKGS pipewire alsa-pipewire"
     # [ALL-DE-EXTRAS] Audio utilities mirroring void-installer's graphical
@@ -592,6 +654,7 @@ EOF
 
     if [ "$WANT_INSTALLER" = yes ]; then
         include_installer
+        setup_installer_desktop
     else
         mkdir -p "$INCLUDEDIR"/usr/bin
         printf "#!/bin/sh\necho 'void-installer is not supported on this live image'\n" > "$INCLUDEDIR"/usr/bin/void-installer
