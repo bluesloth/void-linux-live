@@ -262,6 +262,26 @@ sudo ./voidlive-build-persist.sh build --cache /run/media/you/STICK/xbps-cachedi
 `--seed-cache` is only meaningful together with `flash` (it writes into the
 overlay partition). A missing cache is a warning, not a failure.
 
+## Self-healing builds (`--watch`, flaky uplink)
+
+`--watch` (opt-in, off by default) starts the shipped `builder-watch.sh`
+alongside the build. On a stall — or a build that dies without producing an
+ISO — it restarts the build so it resumes from the same `--cache`, keeping the
+packages already fetched.
+
+```sh
+sudo ./voidlive-build-persist.sh build --persist --both --watch
+sudo ./voidlive-build-persist.sh build --persist --both --watch --cache ./xbps-cachedir-x86_64
+```
+
+Liveness = newest `*.part` mtime **or** XBPS cache size **or** build-tree CPU
+time, so a stall with no `*.part` is still caught and a long CPU-bound step
+cannot false-stall. Up to `BUILDER_WATCH_MAX_HEALS` restarts (default 12);
+progress is logged to `build.log`. `BUILDER_WATCH_STALL_SECS` sets the
+no-progress window (default 180), `BUILDER_WATCH_RESTART_ON_DEATH=no` disables
+restart-on-death, and `BUILDER_WATCH_TOGGLE_NIC=auto|yes|no` controls the NIC
+bounce (`auto` skips it over SSH).
+
 ## Building from a non-Void host (Debian, Arch, ...)
 
 `mklive.sh` needs the Void XBPS toolchain (`xbps-uhelper`, `xbps-install`,

@@ -104,6 +104,30 @@ rootful podman's bridge). Cross-architecture
 builds (target architecture ≠ host) additionally need `qemu-user-static` plus
 binfmt registered on the host.
 
+## Build robustness (`--watch`)
+
+Builds over a flaky or USB-tethered uplink can stall mid-download. `build
+--watch` (opt-in, off by default) starts the shipped `builder-watch.sh`
+supervisor once, detached; if the build stalls — or dies without producing an
+ISO — the watcher snapshots the exact command, kills only the build's own
+process tree, and restarts it so it resumes from the `--cache` directory it
+already populated.
+
+```
+sudo ./voidlive-build-persist.sh build --persist --both --watch
+```
+
+Liveness is judged from any of three signals — the newest `*.part` mtime, the
+XBPS **cache size**, or the build **tree's CPU time** — so a stall with no
+`*.part` on disk (a wedged tether between two downloads) is caught, while a long
+CPU-bound step (unpack, squashfs, xorriso) cannot false-stall. The watcher
+appends to `build.log`, is bounded by `BUILDER_WATCH_MAX_HEALS` (default 12),
+and exits once the ISO lands (releasing its lock for a later `--watch`). Tune
+with `BUILDER_WATCH_STALL_SECS` (default 180, no-progress window),
+`BUILDER_WATCH_RESTART_ON_DEATH=no` (disable restart-on-death) and
+`BUILDER_WATCH_TOGGLE_NIC=auto|yes|no` (default `auto`, which skips the NIC
+bounce in an SSH session since the tether may be the only way back in).
+
 ## Kernel Command-line Parameters
 
 `void-mklive`-based live images support several kernel command-line arguments

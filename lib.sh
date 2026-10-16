@@ -351,8 +351,19 @@ installer_fetch() {
         printf 'FATAL: curl is required to fetch the Void_Linux_Installer (%s).\n' "$_if_url" >&2
         exit 1
     fi
-    if ! curl -fsSL --max-time 60 -o "$_if_dest" "$_if_url"; then
-        printf 'FATAL: could not fetch the Void_Linux_Installer from %s.\n' "$_if_url" >&2
+    # Retry transient failures: build hosts behind a flaky or USB-tethered
+    # uplink stall mid-transfer, and a single-shot curl would abort the whole
+    # build.  --retry covers timeouts, connection resets and 5xx;
+    # --retry-all-errors (curl >= 7.71) additionally retries truncated
+    # transfers (e.g. "transfer closed with N bytes remaining").  Probed
+    # rather than assumed so an older curl still runs.
+    _if_retry="--retry 5 --retry-delay 3 --retry-connrefused"
+    if curl --retry-all-errors --version >/dev/null 2>&1; then
+        _if_retry="$_if_retry --retry-all-errors"
+    fi
+    # shellcheck disable=SC2086  # $_if_retry is a deliberate option word-split
+    if ! curl -fsSL --max-time 60 $_if_retry -o "$_if_dest" "$_if_url"; then
+        printf 'FATAL: could not fetch the Void_Linux_Installer from %s (after retries).\n' "$_if_url" >&2
         printf '       Check network access, or set INSTALLER_REF=<tag|commit> to pin a release.\n' >&2
         exit 1
     fi

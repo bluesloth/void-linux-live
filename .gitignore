@@ -18,3 +18,4 @@ packer/vagrant-*/
 mklive-build*/
 build.log*
 build.status
+.builder-watch.pid

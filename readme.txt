@@ -17,6 +17,9 @@ Notes:
     come AFTER --flash <device> (the wrapper stops parsing its own options at
     the first pass-through flag).  In the two-step form it belongs on the
     build command only.
+  * On a flaky or tethered uplink a build can stall; `build --watch` starts
+    builder-watch.sh, which detects the stall (or a build that dies with no
+    ISO) and restarts the build from the cache.  Off by default.
 
 Desktop environment (--desktop, default: kde)
 ---------------------------------------------

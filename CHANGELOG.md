@@ -49,6 +49,59 @@ commit lists the underlying source commits.
   prefers `pkexec`, falls back to `sudo`). Gated on `WANT_INSTALLER`
   (x86_64/i686); no new pinned input.
 
+### Build robustness
+
+- **[INSTALLER-FETCH-RETRY]** `lib.sh` `installer_fetch` no longer aborts on the
+  first hiccup: it retries the build-time Installer download
+  (`--retry 5 --retry-delay 3 --retry-connrefused`, plus `--retry-all-errors`
+  when curl ≥ 7.71 — probed, not assumed — so a truncated transfer is retried
+  too). Build hosts behind a flaky or USB-tethered uplink used to lose the whole
+  build at this step.
+- **[BUILD-WATCH]** `voidlive-build-persist.sh build --watch` (opt-in, off by
+  default) starts the shipped `builder-watch.sh` once, detached, so a stalled
+  download heals itself and the build restarts from the XBPS cache. Safe to
+  automate: `VLBP_WATCHED=1`, exported into the restart `BUILD_CMD`, makes a
+  restarted build skip the start (no watcher spawns another watcher), and
+  `builder-watch.sh` itself now holds a `.builder-watch.pid` single-instance
+  lock and releases it on `TERM`/`HUP`/`EXIT` *before* exiting. `BUILD_CMD`
+  pins the restart to this exact wrapper invocation (same
+  desktop/greeter/cache/overlay/flash flags), which also preserves the persist
+  wrapper's environment (`PERSISTENT_OVERLAY`) and its flash step — a bare
+  `mkiso.sh` restart would drop both.
+- **[BUILD-WATCH]** `builder-watch.sh` hardening: snapshot the running build
+  command *before* killing it (previously it re-read `/proc` after the kill and
+  found nothing); kill only the build's own process tree (its descendants)
+  instead of a host-wide `kill -9` of every `xbps-install` on the machine; skip
+  the NIC toggle in a remote (SSH) session unless forced
+  (`BUILDER_WATCH_TOGGLE_NIC=auto|yes|no`, default `auto` — the tether may be
+  the only way back in); append to `build.log` across heals rather than
+  truncating (the truncation destroyed the failing run's evidence); honour
+  `BUILDER_WATCH_STALL_SECS`; and fix a `pgrep -c` count that doubled to
+  `"0\n0"` and tripped the liveness test with an "integer expression expected"
+  error on every idle tick.
+- **[BUILD-WATCH-DETECT]** `builder-watch.sh` now judges liveness from any of
+  three signals — the newest `*.part` mtime, the XBPS **cache size**, or the
+  build **tree's CPU time** — instead of `*.part` alone. Previously an xbps
+  stall with **no** `*.part` on disk (cache frozen, CPU idle — e.g. a wedged
+  USB tether between two downloads) went unnoticed: the build then died on its
+  own and the watcher idled forever. A long CPU-bound step (unpack/configure/
+  squashfs/xorriso) advances the tree's CPU time, so it still cannot
+  false-stall. New knobs: `BUILDER_WATCH_RESTART_ON_DEATH=yes|no` (default
+  `yes`) restarts a build that died without producing an ISO (bounded by
+  `BUILDER_WATCH_MAX_HEALS`, default 12); on a completed build (ISO present,
+  nothing running) the watcher exits to release its pidfile lock instead of
+  blocking a later `--watch`.
+- **[BUILD-WATCH-SELFKILL]** `builder-watch.sh` no longer kills **itself** when
+  it heals a stalled build. With `build --watch` and no `--flash` the wrapper
+  forks the watcher and then `exec`s `mkiso.sh`, so the watcher is a **child**
+  of the build root; the tree kill recursed into it and `kill -9`'d the watcher
+  before the heal finished. The result was the worst case: the watcher died, the
+  build was left running, and only then failed on its own (observed: a real
+  `--watch` run caught the stall at 10:46 but never restarted, and the build
+  later died on an xbps `Failed to install`). `kill_tree` now skips `$$` (and,
+  by returning before recursing, its whole subtree), so the watcher survives the
+  kill, is reparented to init when the build root dies, and the heal proceeds.
+
 ## v1.1 — 2026-10-13
 
 Pin the Installer input, single-source the shared vocabulary, and ship the

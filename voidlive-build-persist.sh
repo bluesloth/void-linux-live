@@ -12,7 +12,7 @@ set -eu
 # (installed packages, config, files) survives reboots.
 #
 # Usage:
-#   sudo ./voidlive-build-persist.sh build [--desktop <de>] [--greeter <g>] [--persist] [--flash <device>] [--build-env auto|container|chroot|native] [mklive-args...]
+#   sudo ./voidlive-build-persist.sh build [--desktop <de>] [--greeter <g>] [--persist] [--flash <device>] [--watch] [--build-env auto|container|chroot|native] [mklive-args...]
 #   sudo ./voidlive-build-persist.sh flash <device> [live-iso] [--overlay-size-mib MiB]
 #
 #   build                 Build the ISO (no subcommand is treated as build, so
@@ -67,6 +67,16 @@ set -eu
 #                         that can status/update/replace/download the seeded cache
 #                         with the same refresh/wipe semantics as
 #                         --refresh-cache/--replace-cache.
+#   build --watch         Wrap the build in builder-watch.sh: a background
+#                         watchdog that detects a stalled download (.part files
+#                         stop advancing) on a flaky/uplink-tethered host,
+#                         optionally bounces the NIC, and restarts THIS build
+#                         (same flags) so it resumes from the XBPS cache. It
+#                         writes build.log (appended across heals) and
+#                         build.status. Started once and detached (VLBP_WATCHED
+#                         guard + a pidfile lock prevent watcher storms); set
+#                         BUILDER_WATCH_TOGGLE_NIC=no to heal by restart only,
+#                         without touching the link. Off by default.
 #   flash <device>        Write an ISO to the block device and add a persistence
 #                         partition. live-iso defaults to the newest
 #                         void-live-*.iso in $PWD. All data on <device> is destroyed.
@@ -97,6 +107,14 @@ set -eu
 
 cd "$(dirname "$0")"
 
+# Absolute path to this script + the raw argument list, captured before the
+# dispatcher/`build` parser consumes them.  `build --watch` hands these to
+# builder-watch.sh as BUILD_CMD so a heal restarts THIS exact invocation (same
+# desktop/greeter/cache/overlay/flash flags).  Args are space-joined, which is
+# fine for the space-free flags this wrapper accepts.
+SELF_ABS="$PWD/$(basename "$0")"
+ORIG_ARGV="$*"
+
 OVERLAY_LABEL="VOID_OVL"
 OVERLAY_SIZE_MIB="${OVERLAY_SIZE_MIB:-2048}"
 
@@ -107,6 +125,35 @@ die() {
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1 (install it first)"
+}
+
+# _start_watch: opt-in build watchdog (build --watch).
+#
+# Starts builder-watch.sh once, detached, so a stalled uplink heals itself and
+# the build resumes.  Guards that make auto-engagement safe:
+#   * VLBP_WATCHED=1 in the exported environment makes a restarted build skip
+#     this function — no watcher can spawn another watcher;
+#   * builder-watch.sh also holds its own pidfile lock (belt and braces);
+#   * BUILD_CMD pins the restart to THIS exact invocation (same desktop /
+#     greeter / cache / overlay / flash flags), because builder-watch cannot
+#     re-detect a command line it is about to kill — and a bare mkiso restart
+#     would drop the persist wrapper's environment (PERSISTENT_OVERLAY) and
+#     its flash step.
+# The NIC-toggle behaviour of the watcher is controlled by
+# BUILDER_WATCH_TOGGLE_NIC (auto|yes|no); see builder-watch.sh.
+_start_watch() {
+    [ -x ./builder-watch.sh ] || die "--watch: ./builder-watch.sh not found"
+    [ -x ./mkiso.sh ] || die "--watch: ./mkiso.sh not found"
+    case "${VLBP_WATCHED:-no}" in
+        1|yes)
+            echo "NOTE: --watch ignored (VLBP_WATCHED set: already supervised)." >&2
+            return 0 ;;
+    esac
+    echo "==> --watch: starting builder-watch.sh (self-healing supervisor) ..."
+    export VLBP_WATCHED=1
+    BUILD_CMD="VLBP_WATCHED=1 $SELF_ABS $ORIG_ARGV"
+    export BUILD_CMD
+    setsid nohup ./builder-watch.sh >/dev/null 2>&1 &
 }
 
 # Desktop/greeter vocabularies accepted by --desktop / --greeter.  This is the
@@ -133,7 +180,7 @@ usage() {
     cat <<-EOH
 	Usage: $0 <build|flash> [arguments]
 
-build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-cache] [--replace-cache] [--seed-cache] [--flash <device>] [--overlay-size-mib MiB] [--bootloader <grub|limine|both>] [--build-env auto|container|chroot|native] [mklive-args...]
+build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-cache] [--replace-cache] [--seed-cache] [--flash <device>] [--watch] [--overlay-size-mib MiB] [--bootloader <grub|limine|both>] [--build-env auto|container|chroot|native] [mklive-args...]
     Build the live ISO (default when no subcommand is given); KDE + SDDM by default.
     --desktop <de> selects the desktop: kde (default), gnome, cinnamon, xfce, mate,
     lxqt, cosmic, none (void-installer's list), or base/enlightenment/lxde/xfce-wayland.
@@ -160,6 +207,11 @@ build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-ca
     --flash <device> builds, then writes the result to <device> with a
     VOID_OVL persistence partition in one command; the built ISO is used
     automatically.
+    --watch wraps the build in builder-watch.sh (detached): it detects a
+    stalled download on a flaky/tethered uplink, optionally bounces the NIC
+    (BUILDER_WATCH_TOGGLE_NIC=auto|yes|no), and restarts this exact build so
+    it resumes from the XBPS cache, appending to build.log. Started once
+    (VLBP_WATCHED guard + pidfile lock). Off by default.
     --bootloader <grub|limine|both> (or the shorthand --grub/--limine/--both)
     selects the EFI bootloader(s) for the image; translated to -B for
     mkiso/mklive. User -B flags after it still win (getopts keeps the last).
@@ -858,6 +910,22 @@ build() {
         auto|container|chroot|native) : ;;
         *) die "unknown --build-env mode '$BUILD_ENV_MODE' (use auto|container|chroot|native)" ;;
     esac
+
+    # --- opt-in build watchdog (--watch) -------------------------------------
+    # Parsed here (like --build-env) so it is honoured before the env wrap
+    # below, i.e. it also covers container/chroot builds.  The main arg loop
+    # consumes the flag again purely so it never leaks through to mklive.
+    # Stop at `--`: args after it are mklive passthrough, same as the main loop.
+    WATCH="${VOID_BUILD_WATCH:-no}"
+    for _w_a in "$@"; do
+        [ "$_w_a" = -- ] && break
+        case "$_w_a" in
+            --watch)    WATCH=yes ;;
+            --no-watch) WATCH=no ;;
+        esac
+    done
+    unset _w_a
+    if [ "$WATCH" = yes ]; then _start_watch; fi
     if [ "${VOID_ENV_ACTIVE:-no}" != yes ]; then
         _be_wrap=yes
         case "$BUILD_ENV_MODE" in
@@ -954,6 +1022,9 @@ build() {
                 shift 2
                 ;;
             --build-env=*) BUILD_ENV_MODE="${1#*=}"; shift ;;
+            # --watch / --no-watch were already handled by the pre-scan above;
+            # swallow them here so they do not reach mklive as positionals.
+            --watch|--no-watch) shift ;;
             *) break ;;
         esac
     done
