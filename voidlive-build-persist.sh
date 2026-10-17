@@ -67,6 +67,21 @@ set -eu
 #                         that can status/update/replace/download the seeded cache
 #                         with the same refresh/wipe semantics as
 #                         --refresh-cache/--replace-cache.
+#   build --update-installer
+#                         After flashing, refresh the Void_Linux_Installer ON the
+#                         stick without rebuilding the ISO: deposits
+#                         installer-update-tool.sh (the installer's analogue of the
+#                         cache tool; /installer-update-tool.sh on the booted stick,
+#                         commands status/update/restore) and fetches the published
+#                         script at --installer-ref <ref> (default main), verifies
+#                         it (bash -n + SCRIPT_VERSION + optional
+#                         --installer-sha256 <sha> pin), and installs it into the
+#                         overlay upperdir so it is in effect on the next boot.
+#                         The installer is the single file every live entry point
+#                         runs (/usr/bin/void-installer), and the ISO's squashfs
+#                         copy is read-only -- the write goes through the
+#                         persistence overlay, so this needs a --persist boot to
+#                         stick. A failed update never fails the flash.
 #   build --watch         Wrap the build in builder-watch.sh: a background
 #                         watchdog that detects a stalled download (.part files
 #                         stop advancing) on a flaky/uplink-tethered host,
@@ -96,6 +111,7 @@ set -eu
 #   sudo ./voidlive-build-persist.sh build --persist --seed-cache --both --flash /dev/sdb
 #   sudo ./voidlive-build-persist.sh build --persist --seed-cache --both --flash /dev/sdb --refresh-cache
 #   sudo ./voidlive-build-persist.sh build --persist --seed-cache --both --flash /dev/sdb --replace-cache
+#   sudo ./voidlive-build-persist.sh build --persist --flash /dev/sdb --update-installer --installer-ref v2.9.98
 #   sudo ./voidlive-build-persist.sh flash /dev/sdb void-live-x86_64-20260915-kde.iso --overlay-size-mib 81920
 #
 # Building needs the Void XBPS toolchain that mklive.sh/lib.sh use.  On a
@@ -180,7 +196,7 @@ usage() {
     cat <<-EOH
 	Usage: $0 <build|flash> [arguments]
 
-build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-cache] [--replace-cache] [--seed-cache] [--flash <device>] [--watch] [--overlay-size-mib MiB] [--bootloader <grub|limine|both>] [--build-env auto|container|chroot|native] [mklive-args...]
+build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-cache] [--replace-cache] [--seed-cache] [--update-installer] [--installer-ref <ref>] [--installer-sha256 <sha>] [--flash <device>] [--watch] [--overlay-size-mib MiB] [--bootloader <grub|limine|both>] [--build-env auto|container|chroot|native] [mklive-args...]
     Build the live ISO (default when no subcommand is given); KDE + SDDM by default.
     --desktop <de> selects the desktop: kde (default), gnome, cinnamon, xfce, mate,
     lxqt, cosmic, none (void-installer's list), or base/enlightenment/lxde/xfce-wayland.
@@ -204,6 +220,14 @@ build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-ca
     upperdir), so a later install can reuse the packages from disk, and
     deposits xbps-cache-tool.sh alongside it: /xbps-cache-tool.sh on the
     booted persistent live system (status/update/replace/download the cache).
+    --update-installer refreshes the Void_Linux_Installer ON the stick without
+    rebuilding the ISO: during flash it deposits installer-update-tool.sh (the
+    installer's analogue of the cache tool; /installer-update-tool.sh on the
+    booted stick, commands status/update/restore) and fetches the published
+    script at --installer-ref <ref> (default main), verifies it (bash -n +
+    SCRIPT_VERSION + optional --installer-sha256 <sha> pin), and installs it
+    into the overlay upperdir so it is in effect on the next boot. A failed
+    update never fails the flash: the stick keeps the ISO's installer.
     --flash <device> builds, then writes the result to <device> with a
     VOID_OVL persistence partition in one command; the built ISO is used
     automatically.
@@ -227,10 +251,13 @@ build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-ca
     (Void hosts only). --flash is always done on the host, after the build.
     Remaining args pass through to mklive.sh.
 
-	flash <device> [live-iso] [--seed-cache] [--refresh-cache] [--replace-cache] [--cache <dir>] [--overlay-size-mib MiB]
+	flash <device> [live-iso] [--seed-cache] [--refresh-cache] [--replace-cache] [--cache <dir>] [--update-installer] [--installer-ref <ref>] [--installer-sha256 <sha>] [--overlay-size-mib MiB]
 	    Write an ISO to <device> and append a VOID_OVL persistence partition,
 	    initializing the LiveOS/overlay-<live-label>-<live-uuid> + LiveOS/ovlwork
 	    directories dracut needs to actually use it as the persistent overlay.
+	    --update-installer also deposits installer-update-tool.sh and installs
+	    the installer fetched at --installer-ref (default main) into the overlay
+	    upperdir, so the stick boots with the newest Void_Linux_Installer.
 	    live-iso defaults to the newest void-live-*.iso in \$PWD.
 	    All data on <device> is destroyed.
 
@@ -549,6 +576,336 @@ XBPS_CACHE_TOOL_EOF
 }
 
 # ---------------------------------------------------------------------------
+# Deposit the self-contained installer updater into a VOID_OVL root (partition
+# root or the dmsquash-live overlay upperdir) -- same deposit pattern as
+# _deposit_cache_tool above. The installer equivalent of /xbps-cache-tool.sh:
+# it refreshes /usr/bin/void-installer (the ONE file every live entry point
+# runs: the Desktop symlink and void-installer-launch both exec it) without
+# rebuilding the ISO, by writing through the persistence overlay. The ISO's
+# squashfs copy is read-only and is never touched; the as-built file is backed
+# up before the first overwrite so `restore` can put it back -- always by
+# overwriting, never by deleting (a delete through overlayfs becomes a whiteout
+# that would HIDE the squashfs copy permanently).
+# ---------------------------------------------------------------------------
+_deposit_installer_tool() {
+    _it_root="${1:?deposit root dir missing}"
+    mkdir -p "$_it_root"
+    _it_dest="$_it_root/installer-update-tool.sh"
+    _it_tmp="$_it_root/.installer-update-tool.sh.tmp.$$"
+    cat > "$_it_tmp" <<'INSTALLER_TOOL_EOF'
+#!/usr/bin/env sh
+set -eu
+
+# installer-update-tool.sh -- refresh the Void_Linux_Installer copy this stick
+# runs (/usr/bin/void-installer), WITHOUT rebuilding the ISO.
+#
+# Deposited by voidlive-build-persist.sh into the root of the VOID_OVL
+# persistence partition AND into the dmsquash-live overlay upperdir
+# (LiveOS/overlay-<label>-<uuid>/). On the booted persistent live system it is
+# /installer-update-tool.sh; on a host with the stick mounted it is
+# <mount>/installer-update-tool.sh --target-dir <upperdir>.
+#
+# The installer is the single file every live entry point runs (the Desktop
+# symlink and void-installer-launch both exec /usr/bin/void-installer), so
+# replacing it replaces the installer everywhere. The ISO's rootfs is a
+# read-only squashfs, so the update works through the persistence overlay: on
+# a --persist boot dracut layers the VOID_OVL upperdir over /, the write lands
+# ON the stick and survives reboots. On a NON-persistent boot the overlay is
+# RAM-backed and the write would vanish at reboot -- the tool detects that and
+# refuses (override with --force).
+#
+#   status                            ISO build vs in-effect copy vs overlay stamp
+#   update [--ref R] [--sha256 S]     fetch the published code-only script at ref R
+#                                     (default main, or $INSTALLER_REF), verify it,
+#                                     back up the as-built copy once, install it
+#   restore                           put the as-built backup back
+#
+# Options:
+#   --ref <tag|commit|main>   Git ref to fetch from the public installer repo
+#   --sha256 <hex>            additionally require this exact sha256 (pin it!
+#                             `status` prints the sha of whatever is in effect)
+#   --target-dir <dir>        operate on <dir> instead of the running root; used
+#                             by voidlive-build-persist.sh flash --update-installer
+#                             (it passes the mounted overlay upperdir), so a stick
+#                             can be updated before its first boot
+#   --force                   allow update on a non-persistent (RAM) overlay
+#
+# Fetch seam mirrors the build-time installer_fetch (lib.sh):
+#   $INSTALLER_URL_BASE/$INSTALLER_REPO/<ref>/$INSTALLER_BASENAME
+# so a stick can be moved to any later release tag with:
+#   sudo /installer-update-tool.sh update --ref v2.9.99 --sha256 <pin>
+#
+# Nothing is installed unless the download parses (bash -n), carries a
+# SCRIPT_VERSION= line, and matches --sha256 when one is given -- catching
+# truncated downloads and wrong-ref mistakes before anything is written.
+
+INSTALLER_REPO="${INSTALLER_REPO:-bluesloth/void-linux-installer}"
+INSTALLER_BASENAME="${INSTALLER_BASENAME:-Void_Linux_Installer.sh}"
+INSTALLER_URL_BASE="${INSTALLER_URL_BASE:-https://raw.githubusercontent.com}"
+
+TARGET_DIR="/"
+CMD=
+REF="${INSTALLER_REF:-main}"
+SHA_PIN=
+FORCE=no
+
+STAMP_DIR_REL="usr/local/share/void-installer-update"
+BIN_REL="usr/bin/void-installer"
+ASBUILT_NAME="void-installer.asbuilt"
+PREVIOUS_NAME="void-installer.previous"
+
+die() { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+need_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+
+usage() {
+    cat <<'UOH'
+Usage: installer-update-tool.sh <status|update|restore> [options]
+
+  status                            ISO build vs in-effect installer vs overlay stamp
+  update [--ref R] [--sha256 S]     fetch, verify, install (as root)
+  restore                           put the as-built backup back (as root)
+
+Options:
+  --ref <tag|commit|main>   Git ref to fetch (default: $INSTALLER_REF or main)
+  --sha256 <hex>            require this exact sha256 of the fetched script
+  --target-dir <dir>        operate on <dir> instead of / (host-side use)
+  --force                   allow update on a non-persistent (RAM) overlay
+
+On the booted persistent live system:
+  sudo /installer-update-tool.sh status
+  sudo /installer-update-tool.sh update --ref v2.9.99 --sha256 <pin printed by status>
+UOH
+    exit 0
+}
+
+# Path inside the target root ($TARGET_DIR/<rel>; a bare "/" collapses cleanly).
+tpath() { printf '%s/%s\n' "${TARGET_DIR%/}" "$1"; }
+
+sha_of() { sha256sum "$1" | awk '{print $1}'; }
+
+# First SCRIPT_VERSION="..." value in $1 (empty when absent).
+ver_of() { sed -n 's/^SCRIPT_VERSION="\([^"]*\)".*$/\1/p' "$1" | head -n1; }
+
+# Verdict about the overlay backing / on the RUNNING system:
+#   persistent  a real (stick-backed) upper layer -- updates survive reboots
+#   ram         dracut fell back to a RAM overlay -- updates would be LOST
+#   no-overlay  / is not an overlayfs at all (a regular installed system)
+# The upperdir (when there is one) is printed as the second field.
+persist_verdict() {
+    _fstype=$(findmnt -n -o FSTYPE / 2>/dev/null || true)
+    [ "$_fstype" = overlay ] || { printf 'no-overlay\n'; return 0; }
+    _opts=$(findmnt -n -o OPTIONS / 2>/dev/null || true)
+    _upper=$(printf '%s\n' "$_opts" | tr ',' '\n' | sed -n 's/^upperdir=//p' | head -n1)
+    if [ -z "$_upper" ]; then printf 'no-overlay\n'; return 0; fi
+    # The upperdir itself is not a mountpoint: ask findmnt which filesystem
+    # holds it. A stick-backed partition answers /dev/...; dracut's RAM
+    # fallback overlay answers tmpfs. That distinction is what decides whether
+    # a write here survives the next reboot.
+    _src=$(findmnt -n -o SOURCE --target "$_upper" 2>/dev/null || true)
+    case "$_src" in
+        /dev/*) printf 'persistent %s\n' "$_upper" ;;
+        *)      printf 'ram %s\n' "$_upper" ;;
+    esac
+    unset _fstype _opts _upper _src
+}
+
+cmd_status() {
+    _ref_file=$(tpath "etc/void-linux-live/installer-ref")
+    _bin=$(tpath "$BIN_REL")
+    _stamp=$(tpath "$STAMP_DIR_REL/stamp")
+    _asbuilt=$(tpath "$STAMP_DIR_REL/$ASBUILT_NAME")
+
+    printf 'Target root      : %s\n' "$TARGET_DIR"
+    if [ -r "$_ref_file" ]; then
+        printf 'ISO build (as built by mkiso):\n'
+        sed 's/^/  /' "$_ref_file"
+    else
+        printf 'ISO build stamp  : %s (absent)\n' "$_ref_file"
+    fi
+
+    if [ -f "$_bin" ]; then
+        printf 'In effect now    : version=%s sha256=%s\n' "$(ver_of "$_bin")" "$(sha_of "$_bin")"
+        printf '                   (%s)\n' "$_bin"
+    else
+        printf 'In effect now    : %s MISSING\n' "$_bin"
+    fi
+
+    if [ -r "$_stamp" ]; then
+        printf 'Overlay update   :\n'
+        sed 's/^/  /' "$_stamp"
+    else
+        printf 'Overlay update   : none (the ISO copy is in effect)\n'
+    fi
+    if [ -f "$_asbuilt" ]; then
+        printf 'As-built backup  : %s\n' "$_asbuilt"
+    fi
+
+    if [ "$TARGET_DIR" = "/" ]; then
+        set -- $(persist_verdict)
+        case "$1" in
+            persistent)
+                printf 'Persistence      : persistent overlay (%s) -- updates survive reboots\n' "$2" ;;
+            ram)
+                printf 'Persistence      : RAM overlay (%s)\n' "$2"
+                warn "an update on this boot would be LOST at reboot -- boot the stick with persistence" ;;
+            no-overlay)
+                printf 'Persistence      : / is not a live overlay (a regular installed system)\n'
+                warn "this tool targets the live medium; use --target-dir <upperdir> from a host" ;;
+        esac
+    fi
+    unset _ref_file _bin _stamp _asbuilt
+}
+
+cmd_update() {
+    _bin=$(tpath "$BIN_REL")
+    _stamp=$(tpath "$STAMP_DIR_REL/stamp")
+    _asbuilt=$(tpath "$STAMP_DIR_REL/$ASBUILT_NAME")
+    _prev=$(tpath "$STAMP_DIR_REL/$PREVIOUS_NAME")
+
+    need_cmd curl
+    need_cmd sha256sum
+    [ -n "$REF" ] || die "empty --ref"
+
+    # Live-root mode: refuse where the write cannot stick (see persist_verdict).
+    if [ "$TARGET_DIR" = "/" ] && [ "$FORCE" != yes ]; then
+        case "$(persist_verdict)" in
+            persistent) : ;;
+            ram)         die "this boot runs from a RAM overlay -- the update would be lost at reboot (boot with persistence, or --force)" ;;
+            no-overlay)  die "/ is not a live overlay -- use --target-dir <upperdir> for host-side use (or --force)" ;;
+        esac
+    fi
+
+    _url="$INSTALLER_URL_BASE/$INSTALLER_REPO/$REF/$INSTALLER_BASENAME"
+    _tmp=$(mktemp)
+    trap 'rm -f "$_tmp"' EXIT INT TERM
+    printf 'Fetching        : %s\n' "$_url"
+    _retry_all=
+    if curl --retry-all-errors --version >/dev/null 2>&1; then _retry_all=--retry-all-errors; fi
+    # shellcheck disable=SC2086  # $_retry_all is a deliberate option word-split
+    curl -fsSL --max-time 60 --retry 5 --retry-delay 3 $_retry_all -o "$_tmp" "$_url" \
+        || die "could not fetch $_url (after retries) -- check the network or the ref name"
+
+    # ---- verify BEFORE touching anything on the stick ----
+    _head=$(head -n1 "$_tmp" 2>/dev/null || true)
+    case "$_head" in
+        '#!'*sh*|'#!'*bash*) : ;;
+        *) die "fetched file does not start with a shell shebang (got: ${_head:-(empty)}) -- refusing to install" ;;
+    esac
+    if command -v bash >/dev/null 2>&1; then
+        bash -n "$_tmp" 2>/dev/null || die "fetched script fails 'bash -n' -- refusing to install"
+    else
+        sh -n "$_tmp" 2>/dev/null || die "fetched script fails 'sh -n' -- refusing to install"
+    fi
+    _new_ver=$(ver_of "$_tmp")
+    [ -n "$_new_ver" ] || die "no SCRIPT_VERSION= in the fetched file -- refusing to install"
+    _new_sha=$(sha_of "$_tmp")
+    if [ -n "$SHA_PIN" ] && [ "$_new_sha" != "$SHA_PIN" ]; then
+        die "sha256 mismatch: got $_new_sha, expected pin $SHA_PIN -- refusing to install"
+    fi
+    printf 'Fetched         : version=%s sha256=%s\n' "$_new_ver" "$_new_sha"
+
+    # ---- back up, then install ----
+    if [ -f "$_bin" ]; then
+        mkdir -p "$(dirname "$_asbuilt")"
+        if [ "$TARGET_DIR" = "/" ] && [ ! -f "$_asbuilt" ]; then
+            # First live update: remember exactly what the ISO shipped.
+            cp -p "$_bin" "$_asbuilt"
+            printf 'As-built backup : %s\n' "$_asbuilt"
+        elif [ "$TARGET_DIR" != "/" ]; then
+            # Host-side: whatever sits in the upperdir is a previous overlay
+            # update; keep it so it can be put back.
+            cp -p "$_bin" "$_prev"
+        fi
+    fi
+    install -Dm0755 "$_tmp" "$_bin"
+    mkdir -p "$(dirname "$_stamp")"
+    {
+        printf 'ref=%s\n'          "$REF"
+        printf 'version=%s\n'      "$_new_ver"
+        printf 'sha256=%s\n'       "$_new_sha"
+        printf 'url=%s\n'          "$_url"
+        printf 'installed_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "$_stamp"
+    printf 'Installed       : version=%s -> %s\n' "$_new_ver" "$_bin"
+    printf 'Stamp           : %s\n' "$_stamp"
+    if [ "$TARGET_DIR" = "/" ]; then
+        printf 'Rollback        : sudo %s restore\n' "$0"
+    fi
+    rm -f "$_tmp"
+    trap - EXIT INT TERM
+    unset _bin _stamp _asbuilt _prev _url _tmp _retry_all _head _new_ver _new_sha
+}
+
+cmd_restore() {
+    _bin=$(tpath "$BIN_REL")
+    _asbuilt=$(tpath "$STAMP_DIR_REL/$ASBUILT_NAME")
+    _prev=$(tpath "$STAMP_DIR_REL/$PREVIOUS_NAME")
+
+    if [ "$TARGET_DIR" = "/" ]; then
+        [ -f "$_asbuilt" ] || die "no as-built backup at $_asbuilt -- nothing to restore"
+        install -m0755 "$_asbuilt" "$_bin"
+        printf 'Restored        : as-built copy -> %s\n' "$_bin"
+        printf 'Note            : the overlay file is overwritten, never deleted (a delete through\n'
+        printf '                  overlayfs would whiteout the squashfs copy for good).\n'
+    else
+        if [ -f "$_prev" ]; then
+            install -m0755 "$_prev" "$_bin"
+            printf 'Restored        : previous overlay copy -> %s\n' "$_bin"
+        elif [ -e "$_bin" ]; then
+            # Host-side this is a plain directory entry, not an overlayfs:
+            # removing it makes the squashfs copy show through on next boot.
+            rm -f "$_bin"
+            printf 'Removed         : the overlay update; the ISO copy shows through on next boot.\n'
+        else
+            die "no previous copy and nothing installed at $_bin"
+        fi
+    fi
+    unset _bin _asbuilt _prev
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        status|update|restore) CMD="$1"; shift ;;
+        --ref) [ "$#" -ge 2 ] || die "--ref requires a value"; REF="$2"; shift 2 ;;
+        --ref=*) REF="${1#*=}"; shift ;;
+        --sha256) [ "$#" -ge 2 ] || die "--sha256 requires a value"; SHA_PIN="$2"; shift 2 ;;
+        --sha256=*) SHA_PIN="${1#*=}"; shift ;;
+        --target-dir) [ "$#" -ge 2 ] || die "--target-dir requires a directory"; TARGET_DIR="$2"; shift 2 ;;
+        --target-dir=*) TARGET_DIR="${1#*=}"; shift ;;
+        --force) FORCE=yes; shift ;;
+        -h|--help|help) usage ;;
+        *) die "unknown argument: $1 (see --help)" ;;
+    esac
+done
+[ -n "$CMD" ] || usage
+
+# Live-root writes always need root; a --target-dir write only needs the
+# directory to be writable (flash() runs as root, but a user-mounted stick
+# partition works too).
+if [ "$CMD" != status ]; then
+    if [ "$TARGET_DIR" = "/" ]; then
+        [ "$(id -u)" -eq 0 ] || die "$CMD must run as root (it writes /$BIN_REL)"
+    fi
+fi
+if [ "$TARGET_DIR" != "/" ] && [ ! -d "$TARGET_DIR" ]; then
+    die "target dir does not exist: $TARGET_DIR"
+fi
+
+case "$CMD" in
+    status)  cmd_status ;;
+    update)  cmd_update ;;
+    restore) cmd_restore ;;
+esac
+INSTALLER_TOOL_EOF
+    chmod 0755 "$_it_tmp"
+    mv -f "$_it_tmp" "$_it_dest"
+    echo "Deposited installer updater: $_it_dest"
+    echo "  (booted live system: /installer-update-tool.sh -- status | update --ref vX | restore)"
+    unset _it_root _it_dest _it_tmp
+}
+
+# ---------------------------------------------------------------------------
 # Universal build environment
 #
 # mklive.sh/lib.sh are Void-native: they need the XBPS toolchain in $PATH
@@ -847,6 +1204,14 @@ _build_via_env() {
     _env_cache=$(_opt_value --cache "$@" || true)
     _env_seed=no
     _has_flag --seed-cache "$@" && _env_seed=yes
+    # --update-installer and friends: re-derived here because the containerized
+    # build ran in a child shell (the flags were swallowed by build()'s parse
+    # loop there), and the flash below happens on the HOST.
+    _env_upinst=no
+    _has_flag --update-installer "$@" && _env_upinst=yes
+    _env_upref=$(_opt_value --installer-ref "$@" || true)
+    _env_upsha=$(_opt_value --installer-sha256 "$@" || true)
+    [ -n "$_env_upref" ] && _env_upinst=yes
 
     _ENV_EXTRA_BINDS=$(_env_cache_bind "$@")
     _ENV_EXTRA_BINDS_V=
@@ -883,11 +1248,15 @@ _build_via_env() {
         SEED_CACHE="$_env_seed"
         CACHE_DIR="${_env_cache:-}"
         if [ -n "$_env_cache" ]; then CACHE_EXPLICIT=yes; else CACHE_EXPLICIT=no; fi
+        UPDATE_INSTALLER="$_env_upinst"
+        INSTALLER_UPDATE_REF="$_env_upref"
+        INSTALLER_UPDATE_SHA256="$_env_upsha"
         export OVERLAY_SIZE_MIB SEED_CACHE CACHE_DIR CACHE_EXPLICIT
+        export UPDATE_INSTALLER INSTALLER_UPDATE_REF INSTALLER_UPDATE_SHA256
         echo "==> flashing built image on the host ..."
         flash "$_dev"
     fi
-    unset _env_flash _env_overlay _env_cache _env_seed _rt _b _dev _rc _ENV_EXTRA_BINDS
+    unset _env_flash _env_overlay _env_cache _env_seed _env_upinst _env_upref _env_upsha _rt _b _dev _rc _ENV_EXTRA_BINDS
 }
 
 build() {
@@ -959,6 +1328,24 @@ build() {
         case "$1" in
             --persist) PERSISTENT_OVERLAY=yes; shift ;;
             --seed-cache) SEED_CACHE=yes; shift ;;
+            # --update-installer / --installer-ref / --installer-sha256 are the
+            # flash-side flags: swallowed here (so they never reach mklive as
+            # positionals) and carried into the flash() call below, which does
+            # the work on the freshly created VOID_OVL partition.
+            --update-installer) UPDATE_INSTALLER=yes; shift ;;
+            --installer-ref)
+                [ "$#" -ge 2 ] || die "--installer-ref requires a value"
+                INSTALLER_UPDATE_REF="$2"
+                UPDATE_INSTALLER=yes
+                shift 2
+                ;;
+            --installer-ref=*) INSTALLER_UPDATE_REF="${1#*=}"; UPDATE_INSTALLER=yes; shift ;;
+            --installer-sha256)
+                [ "$#" -ge 2 ] || die "--installer-sha256 requires a value"
+                INSTALLER_UPDATE_SHA256="$2"
+                shift 2
+                ;;
+            --installer-sha256=*) INSTALLER_UPDATE_SHA256="${1#*=}"; shift ;;
             --refresh-cache) REFRESH_CACHE=yes; shift ;;
             --replace-cache) REPLACE_CACHE=yes; shift ;;
             --desktop)
@@ -1060,6 +1447,13 @@ build() {
     GREETER_ARGS=
     [ "$GREETER" = auto ] || GREETER_ARGS="-g $GREETER"
 
+    # --update-installer/--installer-ref only act during flash; say so instead
+    # of silently ignoring them on a build-only run.
+    if [ -z "$FLASH_DEV" ] && [ "${UPDATE_INSTALLER:-no}" = yes ]; then
+        echo "NOTE: --update-installer has no effect without --flash; it refreshes the" >&2
+        echo "      installer on the stick's overlay partition (re-run with --flash)." >&2
+    fi
+
     if [ -n "$FLASH_DEV" ] && [ "${VOID_NO_FLASH:-no}" != yes ]; then
         echo "==> building image ($DESKTOP${GREETER:+, greeter $GREETER}) ..."
         if ./mkiso.sh -b "$DESKTOP" $GREETER_ARGS -- -x "$PWD/postsetup.sh" -I "$PWD/includes" -c "$CACHE_DIR" $MKLIVE_EXTRA "$@"; then
@@ -1089,10 +1483,31 @@ flash() {
     CACHE_EXPLICIT=${CACHE_EXPLICIT:-no}
     REFRESH_CACHE=${REFRESH_CACHE:-no}
     REPLACE_CACHE=${REPLACE_CACHE:-no}
+    # --update-installer: refresh the Void_Linux_Installer on the stick by
+    # depositing installer-update-tool.sh and running it against the overlay
+    # upperdir (see the block after --seed-cache below). Propagated from
+    # build() the same way --seed-cache is.
+    UPDATE_INSTALLER=${UPDATE_INSTALLER:-no}
+    INSTALLER_UPDATE_REF=${INSTALLER_UPDATE_REF:-}     # empty = keep the ISO's copy
+    INSTALLER_UPDATE_SHA256=${INSTALLER_UPDATE_SHA256:-}
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --seed-cache) SEED_CACHE=yes; shift ;;
+            --update-installer) UPDATE_INSTALLER=yes; shift ;;
+            --installer-ref)
+                [ "$#" -ge 2 ] || die "--installer-ref requires a value"
+                INSTALLER_UPDATE_REF="$2"
+                UPDATE_INSTALLER=yes
+                shift 2
+                ;;
+            --installer-ref=*) INSTALLER_UPDATE_REF="${1#*=}"; UPDATE_INSTALLER=yes; shift ;;
+            --installer-sha256)
+                [ "$#" -ge 2 ] || die "--installer-sha256 requires a value"
+                INSTALLER_UPDATE_SHA256="$2"
+                shift 2
+                ;;
+            --installer-sha256=*) INSTALLER_UPDATE_SHA256="${1#*=}"; shift ;;
             --refresh-cache) REFRESH_CACHE=yes; shift ;;
             --replace-cache) REPLACE_CACHE=yes; shift ;;
             --cache)
@@ -1394,6 +1809,58 @@ flash() {
         fi
     fi
 
+    # --update-installer: refresh the Void_Linux_Installer ON the stick without
+    # rebuilding the ISO. The installer ships inside the ISO's read-only
+    # squashfs at /usr/bin/void-installer (the one path every live entry point
+    # runs), so the update goes through the persistence overlay: a file at
+    # <upperdir>/usr/bin/void-installer shadows the squashfs copy on a
+    # persistent boot and lands on the stick. The updater is DEPOSITED like the
+    # cache tool (partition root + overlay upperdir), so the stick can also
+    # update itself later: /installer-update-tool.sh status|update|restore.
+    # --installer-ref pins what to fetch (default: main); the fetched script is
+    # verified (bash -n + SCRIPT_VERSION + optional --installer-sha256 pin)
+    # before anything is written. A failure here never fails the flash: the
+    # stick simply keeps the installer the ISO shipped.
+    if [ "$UPDATE_INSTALLER" = "yes" ]; then
+        if [ -z "$LIVE_LABEL" ] || [ -z "$LIVE_UUID" ]; then
+            echo "NOTE: --update-installer needs the live volume label/UUID (unknown here);" >&2
+            echo "      depositing the updater only; run it on the booted stick instead." >&2
+        fi
+        _up_mnt=$(mktemp -d /tmp/void-upd-install.XXXXXX)
+        if mount "$PART" "$_up_mnt" 2>/dev/null; then
+            _deposit_installer_tool "$_up_mnt"
+            _ovl_upper=
+            if [ -n "$LIVE_LABEL" ] && [ -n "$LIVE_UUID" ]; then
+                _ovl_upper="$_up_mnt/LiveOS/overlay-${LIVE_LABEL}-${LIVE_UUID}"
+            fi
+            if [ -n "$_ovl_upper" ] && [ -d "$_ovl_upper" ]; then
+                _deposit_installer_tool "$_ovl_upper"
+                _up_ref="${INSTALLER_UPDATE_REF:-main}"
+                printf 'Updating the installer on the stick (ref %s) ...\n' "$_up_ref"
+                _up_args="--target-dir $_ovl_upper update --ref $_up_ref"
+                [ -z "$INSTALLER_UPDATE_SHA256" ] || _up_args="$_up_args --sha256 $INSTALLER_UPDATE_SHA256"
+                # shellcheck disable=SC2086  # $_up_args is a deliberate word-split
+                if sh "$_up_mnt/installer-update-tool.sh" $_up_args; then
+                    echo "Installer update applied: ref $_up_ref is in effect on this stick."
+                else
+                    echo "WARNING: installer update failed; the stick keeps the ISO's installer." >&2
+                    echo "         Re-run with --installer-ref <tag>, or update it on the booted stick:" >&2
+                    echo "         /installer-update-tool.sh update --ref $_up_ref" >&2
+                fi
+            else
+                echo "NOTE: overlay upperdir not found; installer update skipped (run" >&2
+                echo "      /installer-update-tool.sh update on the booted stick instead)." >&2
+            fi
+            unset _ovl_upper
+            sync
+            umount "$_up_mnt"
+        else
+            echo "WARNING: could not mount $PART; installer update skipped." >&2
+        fi
+        rmdir "$_up_mnt"
+        unset _up_mnt _up_ref _up_args
+    fi
+
     echo
     echo "Done. Persistent live USB ready:"
     echo "  device:       $DEV"
@@ -1406,6 +1873,9 @@ flash() {
     if [ "$SEED_CACHE" = "yes" ] && [ -d "$CACHE_DIR" ]; then
         echo "  seeded cache: $CACHE_DIR (reusable by the installer)"
         echo "  cache updater: /xbps-cache-tool.sh on the booted stick (update/replace/download)"
+    fi
+    if [ "$UPDATE_INSTALLER" = "yes" ]; then
+        echo "  installer updater: /installer-update-tool.sh on the booted stick (status/update/restore)"
     fi
     echo
     echo "Changes made while running the live system (installed packages, config,"

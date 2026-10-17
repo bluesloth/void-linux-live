@@ -230,6 +230,45 @@ seeded both at the partition root and inside the dmsquash-live overlay upperdir,
 so they're reachable whether dracut holds the partition as the overlay or udisks
 auto-mounts it under `/run/media`.
 
+## Updating the Installer on a flashed stick (`--update-installer`)
+
+The image ships the Void_Linux_Installer as `/usr/bin/void-installer` (the one
+path every live entry point runs — the Desktop symlink and the `Install Void
+Linux` launcher both exec it), fetched at build time from the public repo. To
+move a stick to a newer installer **without rebuilding the ISO**, flash with
+`--update-installer`:
+
+```
+sudo ./voidlive-build-persist.sh flash /dev/sdX void-live-…-kde.iso \
+    --update-installer --installer-ref v2.9.98
+```
+
+`--installer-ref <tag|commit|main>` picks what to fetch (default `main`; same
+URL seam as the build-time fetch), and `--installer-sha256 <sha>` optionally
+pins it. The fetched script is verified *before* anything is written — `bash -n`
+parse, a readable `SCRIPT_VERSION=`, and the optional sha pin — and a failed
+update never fails the flash: the stick simply keeps the installer the ISO
+shipped. `build … --flash …` accepts the same flags.
+
+The Installer itself lives inside the ISO's read-only squashfs, so the update
+goes through the `VOID_OVL` persistence overlay: the new file lands in the
+overlay upperdir and shadows the squashfs copy on every `--persist` boot (a
+non-persistent boot has only a RAM overlay — the tool detects that and refuses
+unless `--force`). Flashing also deposits `installer-update-tool.sh` next to the
+cache tool, so a stick already in the field can update itself:
+
+```
+sudo /installer-update-tool.sh status      # ISO build vs in-effect copy vs stamp
+sudo /installer-update-tool.sh update --ref v2.9.99 --sha256 <pin>
+sudo /installer-update-tool.sh restore     # put the as-built copy back
+```
+
+`status` prints the sha256 of whatever is currently in effect, which is exactly
+what to pass as `--sha256` on the next update to lock it down. On the first
+update the as-built (ISO) copy is backed up beside the stamp; `restore` copies
+it back — never by deleting the overlay file, since a delete through overlayfs
+becomes a whiteout that would hide the squashfs copy for good.
+
 ## Desktops and greeters
 
 By default the persist build produces a KDE Plasma image with SDDM, but any

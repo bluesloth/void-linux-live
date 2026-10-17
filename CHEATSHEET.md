@@ -262,6 +262,36 @@ sudo ./voidlive-build-persist.sh build --cache /run/media/you/STICK/xbps-cachedi
 `--seed-cache` is only meaningful together with `flash` (it writes into the
 overlay partition). A missing cache is a warning, not a failure.
 
+## Updating the Installer on a stick (`--update-installer`)
+
+| Flag | Effect |
+| --- | --- |
+| `--update-installer` | During **flash**, refresh the Installer on the stick without rebuilding the ISO: deposit `/installer-update-tool.sh` (partition root + overlay upperdir) and install the fetched script into the upperdir, so it is in effect on the next `--persist` boot. A failed update never fails the flash. |
+| `--installer-ref <ref>` | Which ref to fetch (default `main`; same URL seam as the build-time fetch). Implies `--update-installer`. |
+| `--installer-sha256 <sha>` | Additionally require this exact sha256 of the fetched script. |
+
+```sh
+sudo ./voidlive-build-persist.sh flash /dev/sdX void-live-…-kde.iso \
+    --update-installer --installer-ref v2.9.98 --installer-sha256 <sha>
+```
+
+On the booted persistent stick the deposited tool is `/installer-update-tool.sh`:
+
+```sh
+sudo /installer-update-tool.sh status                 # ISO build vs in-effect copy vs stamp
+sudo /installer-update-tool.sh update --ref v2.9.99 --sha256 <pin printed by status>
+sudo /installer-update-tool.sh restore                # put the as-built copy back
+```
+
+The Installer is the single file every live entry point runs
+(`/usr/bin/void-installer`); its ISO copy is read-only squashfs, so the update
+writes through the persistence overlay. On a non-persistent (RAM) boot the tool
+refuses, since the change would be lost at reboot (`--force` overrides). The
+fetched script is verified before install (`bash -n` + `SCRIPT_VERSION` +
+optional sha pin), the as-built copy is backed up on the first update, and
+`restore` overwrites rather than deletes (a delete through overlayfs would
+whiteout the squashfs copy for good).
+
 ## Self-healing builds (`--watch`, flaky uplink)
 
 `--watch` (opt-in, off by default) starts the shipped `builder-watch.sh`

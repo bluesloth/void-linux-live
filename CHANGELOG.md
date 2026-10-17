@@ -26,6 +26,29 @@ commit lists the underlying source commits.
   `INSTALLER_REF=v2.9.95`. The Installer→Live seam is now a fetch declaration
   (`# INSTALLER-REF:` in `mkiso.sh`) instead of a version+SHA pin
   (`coordination/PINS.md` §3.1).
+- **[INSTALLER-UPDATE-TOOL]** Refresh the Installer on an already-flashed stick
+  without rebuilding the ISO — the installer's analogue of `xbps-cache-tool.sh`.
+  The Installer ships inside the ISO's read-only squashfs at
+  `/usr/bin/void-installer` (the single path every live entry point runs: the
+  Desktop symlink and `void-installer-launch`), so an in-place update can only
+  go through the `VOID_OVL` persistence overlay, where a new
+  `usr/bin/void-installer` shadows the squashfs copy and survives reboots (a
+  non-persistent boot uses a RAM overlay; the tool detects that and refuses
+  unless `--force`). `voidlive-build-persist.sh flash … --update-installer`
+  deposits a new self-contained `installer-update-tool.sh` (partition root +
+  overlay upperdir, same deposit pattern as the cache tool) and runs it against
+  the upperdir, so the stick boots with the fetched installer on first boot.
+  `--installer-ref <tag|commit|main>` picks what to fetch (default `main`; same
+  URL seam as the build-time `installer_fetch`), `--installer-sha256 <sha>`
+  optionally pins it. On the booted persistent live system the deposited tool is
+  `/installer-update-tool.sh`: `status` (ISO build vs in-effect copy vs overlay
+  stamp, with the sha256 to pin on the next run), `update [--ref R] [--sha256 S]`
+  (fetch → verify with `bash -n` + `SCRIPT_VERSION` + optional pin → back up the
+  as-built copy once → install), and `restore` (copy the as-built backup back —
+  never a delete, which would whiteout the squashfs copy for good). Both
+  `build --update-installer --flash …` and standalone `flash` accept the flags;
+  a failed update never fails the flash (the stick keeps the ISO's installer).
+  Also swallowed by `build`'s parse loop so the flags never leak to mklive.
 
 ### Packages
 
