@@ -638,7 +638,7 @@ while getopts "a:b:c:H:r:C:T:Kk:l:i:I:S:e:s:o:p:g:v:P:R:x:B:Vh" opt; do
 	esac
 done
 shift $((OPTIND - 1))
-XBPS_REPOSITORY="$XBPS_REPOSITORY --repository=https://repo-default.voidlinux.org/current --repository=https://repo-default.voidlinux.org/current/musl --repository=https://repo-default.voidlinux.org/current/aarch64"
+XBPS_REPOSITORY="$XBPS_REPOSITORY --repository=https://repo-default.voidlinux.org/current --repository=https://repo-default.voidlinux.org/current/aarch64"
 
 # Persistent overlay is OPT-IN (-R or PERSISTENT_OVERLAY=yes): when booting
 # from a USB stick that carries a partition labeled VOID_OVL (see

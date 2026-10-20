@@ -262,25 +262,31 @@ sudo ./voidlive-build-persist.sh build --cache /run/media/you/STICK/xbps-cachedi
 `--seed-cache` is only meaningful together with `flash` (it writes into the
 overlay partition). A missing cache is a warning, not a failure.
 
-## Updating the Installer on a stick (`--update-installer`)
+## Updating the Installer on a stick
 
-| Flag | Effect |
-| --- | --- |
-| `--update-installer` | During **flash**, refresh the Installer on the stick without rebuilding the ISO: deposit `/installer-update-tool.sh` (partition root + overlay upperdir) and install the fetched script into the upperdir, so it is in effect on the next `--persist` boot. A failed update never fails the flash. |
-| `--installer-ref <ref>` | Which ref to fetch (default `main`; same URL seam as the build-time fetch). Implies `--update-installer`. |
-| `--installer-sha256 <sha>` | Additionally require this exact sha256 of the fetched script. |
+One tool location, one update path: the updater `mkiso.sh` bakes into every
+image at `/usr/local/share/void-installer-update/installer-update-tool.sh`.
+(The earlier flash-time flags — `--update-installer` / `--installer-ref` /
+`--installer-sha256`, shipped in `v1.11` — were removed from this tree; they
+now fail with a pointer to this flow.)
+
+**Double-click** either desktop entry (the `Install Void Linux.desktop`
+launcher or the `Void_Linux_Installer.sh` symlink — both run
+`void-installer-launch`): it asks `Check GitHub for a newer installer script?
+[y/N]` — bare Enter is No — and on *yes* runs `update --if-newer --ref main`
+via the privilege helper. No network, a RAM-only overlay, a missing updater or
+a missing helper all warn and continue with the local copy: the check never
+blocks an install.
+
+Or run the baked copy directly on the booted stick:
 
 ```sh
-sudo ./voidlive-build-persist.sh flash /dev/sdX void-live-…-kde.iso \
-    --update-installer --installer-ref v2.9.98 --installer-sha256 <sha>
-```
-
-On the booted persistent stick the deposited tool is `/installer-update-tool.sh`:
-
-```sh
-sudo /installer-update-tool.sh status                 # ISO build vs in-effect copy vs stamp
-sudo /installer-update-tool.sh update --ref v2.9.99 --sha256 <pin printed by status>
-sudo /installer-update-tool.sh restore                # put the as-built copy back
+U=/usr/local/share/void-installer-update/installer-update-tool.sh
+$U check --ref main             # fetch + compare only, no root
+sudo $U status                  # ISO build vs in-effect copy vs stamp
+sudo $U update --ref v2.9.99 --sha256 <pin printed by status>
+sudo $U update --if-newer --ref main   # no-op when the shas match
+sudo $U restore                 # put the as-built copy back
 ```
 
 The Installer is the single file every live entry point runs

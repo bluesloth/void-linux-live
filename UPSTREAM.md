@@ -30,7 +30,7 @@ git merge upstream/master
 
 | File | Local change |
 | --- | --- |
-| `mklive.sh` | Limine EFI boot, opt-in persistent overlay (`-R`), DE/greeter plumbing |
+| `mklive.sh` | Limine EFI boot, opt-in persistent overlay (`-R`), DE/greeter plumbing, upstream's `musl` repo dropped from `XBPS_REPOSITORY` (glibc x86_64 images only — re-add `--repository=…/current/musl` to build a musl image) |
 | `mkiso.sh` | per-DE flavors, greeter selection, DE extras |
 | `lib.sh` | `installer_fetch` — fetch the `Void_Linux_Installer` at build time |
 | `mknet.sh` | fetch the installer (build-time) instead of copying `installer.sh` |

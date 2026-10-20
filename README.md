@@ -184,6 +184,17 @@ persistent overlay" shown at boot.
 *Note:* the partition is only used when the ISO was built with
 `--persist`; otherwise it's just unused reserved space.
 
+To verify persistence is engaged on a booted stick, resolve the overlay
+upperdir's real path — it is a symlink into the `VOID_OVL` partition, not a
+tmpfs path (a bare `grep upperdir=` on `findmnt /` output looks like a tmpfs
+`/run` path and would misdiagnose a working persistent boot as RAM-backed):
+
+```
+readlink -f "$(findmnt / | grep -o 'upperdir=[^,]*' | cut -d= -f2)"
+# must resolve under /run/initramfs/overlayfs/ — a tmpfs fallback resolves under /tmp/run
+df /   # reports the VOID_OVL partition's stats when persistence is real
+```
+
 ### Seeding an offline XBPS package cache
 
 Building the ISO downloads every base + desktop package through an XBPS cache
@@ -232,44 +243,55 @@ seeded both at the partition root and inside the dmsquash-live overlay upperdir,
 so they're reachable whether dracut holds the partition as the overlay or udisks
 auto-mounts it under `/run/media`.
 
-## Updating the Installer on a flashed stick (`--update-installer`)
+## Updating the Installer on a live stick
 
 The image ships the Void_Linux_Installer as `/usr/bin/void-installer` (the one
 path every live entry point runs — the Desktop symlink and the `Install Void
-Linux` launcher both exec it), fetched at build time from the public repo. To
-move a stick to a newer installer **without rebuilding the ISO**, flash with
-`--update-installer`:
+Linux` launcher both exec it), fetched at build time from the public repo, and
+ships the updater alongside it, baked into every image by `mkiso.sh` at
+`/usr/local/share/void-installer-update/installer-update-tool.sh` — so a stick
+already in the field can move to a newer installer **without rebuilding the
+ISO**.
+
+The blessed path is a double-click: both desktop entries — the
+`Install Void Linux.desktop` launcher and the `Void_Linux_Installer.sh` symlink
+beside it, which point at the same `void-installer-launch` wrapper — ask
+`Check GitHub for a newer installer script? [y/N]` before elevating. *Yes* runs
+`update --if-newer --ref main` through the privilege helper; bare Enter and
+every failure mode (no network, a RAM-only overlay, no updater on the image, no
+privilege helper) fall through to the local copy, so the check can never block
+an install.
+
+The same tool, run directly from a terminal on the booted stick
+(`U=/usr/local/share/void-installer-update/installer-update-tool.sh`):
 
 ```
-sudo ./voidlive-build-persist.sh flash /dev/sdX void-live-…-kde.iso \
-    --update-installer --installer-ref v2.9.98
+$U check --ref main                     # fetch + compare only; no root, no writes
+sudo $U status                          # ISO build vs in-effect copy vs stamp
+sudo $U update --ref v2.9.99 --sha256 <pin>
+sudo $U update --if-newer --ref main    # skip if the shas match
+sudo $U restore                         # put the as-built copy back
 ```
-
-`--installer-ref <tag|commit|main>` picks what to fetch (default `main`; same
-URL seam as the build-time fetch), and `--installer-sha256 <sha>` optionally
-pins it. The fetched script is verified *before* anything is written — `bash -n`
-parse, a readable `SCRIPT_VERSION=`, and the optional sha pin — and a failed
-update never fails the flash: the stick simply keeps the installer the ISO
-shipped. `build … --flash …` accepts the same flags.
 
 The Installer itself lives inside the ISO's read-only squashfs, so the update
 goes through the `VOID_OVL` persistence overlay: the new file lands in the
 overlay upperdir and shadows the squashfs copy on every `--persist` boot (a
 non-persistent boot has only a RAM overlay — the tool detects that and refuses
-unless `--force`). Flashing also deposits `installer-update-tool.sh` next to the
-cache tool, so a stick already in the field can update itself:
+unless `--force`).
 
-```
-sudo /installer-update-tool.sh status      # ISO build vs in-effect copy vs stamp
-sudo /installer-update-tool.sh update --ref v2.9.99 --sha256 <pin>
-sudo /installer-update-tool.sh restore     # put the as-built copy back
-```
+`--ref <tag|commit|main>` picks what to fetch (default `main`; same URL seam as
+the build-time fetch) and `--sha256 <sha>` optionally pins it. `status` prints
+the sha256 of whatever is currently in effect, which is exactly what to pass as
+`--sha256` on the next update to lock it down. On the first update the as-built
+(ISO) copy is backed up beside the stamp; `restore` copies it back — never by
+deleting the overlay file, since a delete through overlayfs becomes a whiteout
+that would hide the squashfs copy for good.
 
-`status` prints the sha256 of whatever is currently in effect, which is exactly
-what to pass as `--sha256` on the next update to lock it down. On the first
-update the as-built (ISO) copy is backed up beside the stamp; `restore` copies
-it back — never by deleting the overlay file, since a delete through overlayfs
-becomes a whiteout that would hide the squashfs copy for good.
+One tool location, one update path: the earlier flash-time surface
+(`flash --update-installer` / `--installer-ref` / `--installer-sha256`, which
+deposited `/installer-update-tool.sh` and installed a fetched script during
+flashing — shipped in `v1.11`) was removed from this tree — the old flags now
+fail with a pointer to the desktop flow.
 
 ## Desktops and greeters
 

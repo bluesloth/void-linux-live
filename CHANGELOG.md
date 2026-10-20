@@ -34,21 +34,31 @@ commit lists the underlying source commits.
   go through the `VOID_OVL` persistence overlay, where a new
   `usr/bin/void-installer` shadows the squashfs copy and survives reboots (a
   non-persistent boot uses a RAM overlay; the tool detects that and refuses
-  unless `--force`). `voidlive-build-persist.sh flash … --update-installer`
-  deposits a new self-contained `installer-update-tool.sh` (partition root +
-  overlay upperdir, same deposit pattern as the cache tool) and runs it against
-  the upperdir, so the stick boots with the fetched installer on first boot.
-  `--installer-ref <tag|commit|main>` picks what to fetch (default `main`; same
-  URL seam as the build-time `installer_fetch`), `--installer-sha256 <sha>`
-  optionally pins it. On the booted persistent live system the deposited tool is
-  `/installer-update-tool.sh`: `status` (ISO build vs in-effect copy vs overlay
-  stamp, with the sha256 to pin on the next run), `update [--ref R] [--sha256 S]`
-  (fetch → verify with `bash -n` + `SCRIPT_VERSION` + optional pin → back up the
+  unless `--force`). The updater ships baked into every image by `mkiso.sh`
+  (`include_installer_updater` →
+  `/usr/local/share/void-installer-update/installer-update-tool.sh`): `status`
+  (ISO build vs in-effect copy vs overlay stamp, with the sha256 to pin on the
+  next run), `update [--ref R] [--sha256 S]` (R picks what to fetch — default
+  `main`, same URL seam as the build-time `installer_fetch` — and the optional
+  pin is enforced; fetch → verify with `bash -n` + `SCRIPT_VERSION` → back up the
   as-built copy once → install), and `restore` (copy the as-built backup back —
-  never a delete, which would whiteout the squashfs copy for good). Both
-  `build --update-installer --flash …` and standalone `flash` accept the flags;
-  a failed update never fails the flash (the stick keeps the ISO's installer).
-  Also swallowed by `build`'s parse loop so the flags never leak to mklive.
+  never a delete, which would whiteout the squashfs copy for good). `restore`
+  also **rewrites the stamp** with a `restored_utc=` line (plus the sha of the
+  copy now in effect) instead of leaving the old `installed_utc=` block behind,
+  and `status` labels that block `Last restore` rather than `Overlay update` —
+  so a rollback never reads as a pending update. On the host-side removal path
+  (no previous copy) the stamp is deleted outright, so `status` reports
+  `none (the ISO copy is in effect)`. **Shipped in `v1.11`; removed by
+  `[LIVE-INSTALLER-CHECK]` (see there):** `voidlive-build-persist.sh
+  flash … --update-installer` / `--installer-ref` / `--installer-sha256`
+  deposited a second copy of the tool at `/installer-update-tool.sh`
+  (partition root + dmsquash upperdir, same pattern as `--seed-cache`) and
+  installed the fetched script into the upperdir at flash time — `build …
+  --flash …` accepted the same flags (swallowed by `build()`'s parse loop so
+  they never reached mklive), and a failed update never failed the flash (the
+  stick kept the ISO's installer). That surface — the flags,
+  `_deposit_installer_tool()` and the deposited copy — is gone from the tree
+  (invoking the old flags now fails with a pointer to the desktop flow).
 
 ### Packages
 
@@ -71,9 +81,47 @@ commit lists the underlying source commits.
   it as root in a terminal (`Terminal=true`; a `void-installer-launch` shim
   prefers `pkexec`, falls back to `sudo`). Gated on `WANT_INSTALLER`
   (x86_64/i686); no new pinned input.
+- **[LIVE-INSTALLER-CHECK]** On booting the live USB, both desktop entries — the
+  `Install Void Linux.desktop` launcher *and* the `Void_Linux_Installer.sh`
+  symlink, which now points at the same `void-installer-launch` wrapper instead
+  of straight at the artifact — offer `Check GitHub for a newer installer
+  script? [y/N]` before elevating. Bare Enter is No, so the normal case stays
+  one keystroke from the installer. A *yes* runs the updater as root with
+  `update --if-newer --ref main`: fetch → verify (`bash -n` + `SCRIPT_VERSION` +
+  optional sha pin) → **stop before any write when the fetched sha equals the
+  in-effect sha** → otherwise as-built backup + overlay install + stamp. Every
+  failure mode warns and continues with the local copy — no network, a missing
+  updater on the image, no privilege helper, and a RAM-only overlay (the
+  persistence refusal is deferred past the up-to-date comparison, so "already
+  up to date" still answers on any boot): the check can never block an
+  install. To make that possible the updater is no longer flash-only —
+  `mkiso.sh` bakes the tool into every image at
+  `/usr/local/share/void-installer-update/` (`include_installer_updater`,
+  FATAL if the source file is missing), and the tool gains a read-only `check`
+  subcommand (no root, nothing written, exit 0 for either verdict). The tool
+  body lives in the single shared source file `installer-update-tool.sh`,
+  read by `mkiso.sh` instead of an inline heredoc — a second copy would
+  silently drift. One tool location, one update path: **this change-set also
+  removes `v1.11`'s flash-time surface** — `flash --update-installer` /
+  `--installer-ref` / `--installer-sha256`, `_deposit_installer_tool()` and
+  the deposited `/installer-update-tool.sh` copy are gone (the old flags now
+  fail with a pointer to this flow), so the desktop double-click is the way
+  a stick checks for a newer Installer.
 
 ### Build robustness
 
+- **[BUILD-REPOS]** `mklive.sh` no longer appends upstream's `current/musl`
+  repository to `XBPS_REPOSITORY` (upstream hard-codes main + musl + aarch64 on
+  one line). Musl packages are arch-tagged `x86_64-musl` and can never be
+  selected for a glibc x86_64 image, so the sync only ever fetched metadata —
+  and on 2026-10-18 the mirror resolved for `repo-default.voidlinux.org` 404'd
+  `current/musl/x86_64-repodata` on every host-side sync during a rebuild,
+  printing an ERROR at step `[1/13]` of every run. `current` and
+  `current/aarch64` are kept (the latter syncs fine and backs upstream
+  cross-build support); the `Makefile`'s multi-arch `-r …/musl` is untouched —
+  it serves `make`'s musl image targets, which this project does not build.
+  Consequence: a musl live image built from this tree needs the entry restored
+  first (recorded in `UPSTREAM.md`'s conflict table).
 - **[INSTALLER-FETCH-RETRY]** `lib.sh` `installer_fetch` no longer aborts on the
   first hiccup: it retries the build-time Installer download
   (`--retry 5 --retry-delay 3 --retry-connrefused`, plus `--retry-all-errors`

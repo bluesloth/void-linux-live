@@ -105,22 +105,48 @@ include_installer() {
 }
 
 # ---------------------------------------------------------------------------
+# Bake the Installer updater into every image that ships the Installer.
+#
+# installer-update-tool.sh (the shared source file next to this script) is the
+# ONE updater a live stick gets: void-installer-launch's "check GitHub for a
+# newer script?" prompt runs the copy baked here, so every freshly written or
+# refreshed image can refresh the Installer in place.  (An earlier flash-time
+# deposit -- flash --update-installer writing /installer-update-tool.sh at the
+# partition root -- was removed: one tool location, one update path.)
+# ---------------------------------------------------------------------------
+include_installer_updater() {
+    _src="$(dirname "$0")/installer-update-tool.sh"
+    [ -f "$_src" ] || _src="./installer-update-tool.sh"
+    if [ ! -f "$_src" ]; then
+        echo "FATAL: installer-update-tool.sh not found (expected next to mkiso.sh)" >&2
+        exit 1
+    fi
+    install -Dm755 "$_src" \
+        "$INCLUDEDIR"/usr/local/share/void-installer-update/installer-update-tool.sh
+    unset _src
+}
+
+# ---------------------------------------------------------------------------
 # Surface the Installer on the live desktop.
 #
 # The image ships the Installer as /usr/bin/void-installer (see
 # include_installer above) but nothing on the live desktop points at it, so a
 # freshly-booted medium gives no sign the installer exists.  Seed two items:
 #
-#   Desktop/Void_Linux_Installer.sh      the Installer itself, visible on the
-#                                        desktop.  A symlink to the single
-#                                        shipped copy (/usr/bin/void-installer)
-#                                        — no second copy of the artifact, and
-#                                        it stays the code-only strip.
+#   Desktop/Void_Linux_Installer.sh      visible on the desktop.  A symlink to
+#                                        void-installer-launch -- the SAME
+#                                        wrapper the .desktop runs -- so both
+#                                        desktop entries offer the identical
+#                                        "check GitHub for a newer script?"
+#                                        prompt.  Still just a symlink: no
+#                                        second copy of the artifact exists.
 #   Desktop/Install Void Linux.desktop   a launcher that runs it as root in a
 #                                        terminal.  The Installer requires root;
 #                                        Terminal=true asks the DE to supply the
 #                                        terminal, and void-installer-launch
-#                                        picks the privilege helper.
+#                                        offers the GitHub check, refreshes the
+#                                        script through the overlay when asked,
+#                                        then picks the privilege helper.
 #
 # The live user (anon, or live.user=) is created at boot by the dracut
 # vmklive/adduser.sh hook with `useradd -m`, which copies /etc/skel into the new
@@ -129,7 +155,7 @@ include_installer() {
 setup_installer_desktop() {
     mkdir -p "$INCLUDEDIR"/etc/skel/Desktop "$INCLUDEDIR"/usr/local/sbin
 
-    ln -sf /usr/bin/void-installer \
+    ln -sf /usr/local/sbin/void-installer-launch \
         "$INCLUDEDIR"/etc/skel/Desktop/Void_Linux_Installer.sh
 
     # Elevation shim.  On the live image the login user is in wheel: the dracut
@@ -140,6 +166,46 @@ setup_installer_desktop() {
     cat > "$INCLUDEDIR"/usr/local/sbin/void-installer-launch << 'EOF'
 #!/bin/sh
 set -u
+
+# [LIVE-INSTALLER-CHECK]  Ask once, before elevating: is the script this image
+# ships the newest one on GitHub?  Bare Enter is No, so the normal case stays
+# one keystroke from the installer.  EVERY failure mode -- no network, a
+# RAM-only overlay, no updater on this image, no privilege helper -- warns and
+# continues with the local copy: the check must never block an install.
+#
+# The updater does the whole job (fetch from the public repo at ref, verify
+# with bash -n + SCRIPT_VERSION + optional sha pin, skip when the shas already
+# match via --if-newer, back up the as-built copy once, install through the
+# persistence overlay, stamp).  One tool location: the copy mkiso.sh bakes
+# into every image (the flash-time deposit at / was removed).
+_updater=/usr/local/share/void-installer-update/installer-update-tool.sh
+[ -f "$_updater" ] || _updater=
+
+run_as_root() {
+    if command -v pkexec >/dev/null 2>&1; then
+        pkexec "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        "$@"
+    fi
+}
+
+if [ -n "$_updater" ]; then
+    printf '\nCheck GitHub for a newer installer script? [y/N] '
+    _ans=
+    read -r _ans || _ans=
+    case "$_ans" in
+        y|Y|yes|YES|Yes)
+            if ! run_as_root "$_updater" update --if-newer --ref "${INSTALLER_REF:-main}"; then
+                printf 'note: the update check did not complete -- using the local copy.\n'
+            fi
+            ;;
+        *) : ;;
+    esac
+fi
+unset _ans _updater _c
+
 if command -v pkexec >/dev/null 2>&1; then
     exec pkexec /usr/bin/void-installer "$@"
 fi
@@ -676,6 +742,7 @@ EOF
 
     if [ "$WANT_INSTALLER" = yes ]; then
         include_installer
+        include_installer_updater
         setup_installer_desktop
     else
         mkdir -p "$INCLUDEDIR"/usr/bin

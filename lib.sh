@@ -330,7 +330,12 @@ set_cachedir() {
 # the live image (mkiso.sh include_installer), so the installer a given ISO
 # shipped can always be identified after the fact.
 INSTALLER_REPO="${INSTALLER_REPO:-bluesloth/void-linux-installer}"
-INSTALLER_REF="${INSTALLER_REF:-main}"
+# AI (Big Pickle) CHANGE — Version-3.1.00 [INSTALLER-REF]: pinned to the release
+# TAG rather than `main` so a live ISO always builds against an installer that
+# is frozen on GitHub — the pin is committed only AFTER that tag exists on the
+# remote, otherwise the raw.githubusercontent fetch below would 404 for every
+# build until the installer was published. Overridable at build time as before.
+INSTALLER_REF="${INSTALLER_REF:-Version-3.1.00}"
 INSTALLER_BASENAME="${INSTALLER_BASENAME:-Void_Linux_Installer.sh}"
 INSTALLER_URL_BASE="${INSTALLER_URL_BASE:-https://raw.githubusercontent.com}"
 
