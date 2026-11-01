@@ -330,12 +330,47 @@ set_cachedir() {
 # the live image (mkiso.sh include_installer), so the installer a given ISO
 # shipped can always be identified after the fact.
 INSTALLER_REPO="${INSTALLER_REPO:-bluesloth/void-linux-installer}"
-# AI (Big Pickle) CHANGE — Version-3.1.00 [INSTALLER-REF]: pinned to the release
+# AI (Big Pickle) CHANGE — Version-3.2.01 [INSTALLER-REF]: pinned to the release
 # TAG rather than `main` so a live ISO always builds against an installer that
 # is frozen on GitHub — the pin is committed only AFTER that tag exists on the
 # remote, otherwise the raw.githubusercontent fetch below would 404 for every
 # build until the installer was published. Overridable at build time as before.
-INSTALLER_REF="${INSTALLER_REF:-Version-3.1.00}"
+#
+# Moved Version-3.1.00 -> Version-3.2.01 because the Discover integration
+# ([DISCOVER-STORE]) only ships from 3.2.00 and the repo-order fix
+# ([DISCOVER-STORE-REPO-ORDER]) only ships from 3.2.01: an image pinned to
+# 3.1.00 provisions no Discover store at all, and an image pinned to 3.2.00
+# installs the STOCK discover from the official repo (first repo in config
+# order wins for a bare `xbps-install <name>`), i.e. a build with no
+# xbps-backend.so. Keep this pin at or above the newest installer that fixes
+# both.
+#
+# Moved Version-3.2.01 -> Version-3.2.02 because the GNOME Software store
+# ([GNOME-SOFTWARE-STORE]) only ships from 3.2.02: an image pinned to 3.2.01
+# provisions NOTHING for a GNOME desktop, so GNOME Software is either absent
+# or the stock flatpak-only build. 3.2.02 also fixes the store fallback, which
+# in the earlier code installed no Software app at all. Keep this pin at or
+# above the newest installer that carries every desktop store.
+#
+# Moved Version-3.2.02 -> Version-3.2.03 because the first fresh GNOME install
+# exposed a real first-boot race ([ELOGIND-NO-DBUS-ACTIVATION] +
+# [GDM-WAIT-LOGIND]): a dbus-activatable `org.freedesktop.login1.service` stub
+# let elogind start twice, and GDM could start before logind's seat0 existed, so
+# the box needed three boots to reach a login prompt. 3.2.03 renames the
+# activation stub away, makes GDM wait for seat0, and self-heals both from
+# /root/tools via rc.local on every boot. Below 3.2.03 an image provisions the
+# same race on any GDM desktop. Keep this pin at or above the newest installer.
+#
+# Moved Version-3.2.03 -> Version-3.2.04 because the same fresh GNOME install
+# showed the update-snapshot wrapper taking no rollback pair for a GUI-driven
+# system update ([PKG-SNAP-LONGOPT]): its matcher only knew the SHORT xbps
+# flags, and GNOME Software spawns `xbps-install --sync --update --yes`, so the
+# operation that most needs a pre/post pair was the one that got none. 3.2.04
+# teaches the matcher the long spellings too. This one is not a boot-safety
+# pin — an image below 3.2.04 still installs and boots fine — but a box built
+# from it can never roll back a store update, so keep this pin at or above the
+# newest installer.
+INSTALLER_REF="${INSTALLER_REF:-Version-3.2.04}"
 INSTALLER_BASENAME="${INSTALLER_BASENAME:-Void_Linux_Installer.sh}"
 INSTALLER_URL_BASE="${INSTALLER_URL_BASE:-https://raw.githubusercontent.com}"
 

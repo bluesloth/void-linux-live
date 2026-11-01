@@ -13,6 +13,57 @@ commit lists the underlying source commits.
 
 ### Interop
 
+- **[INSTALLER-REF-3.2.04]** Bump the shipped-Installer pin
+  `Version-3.2.03` → `Version-3.2.04`. The same fresh GNOME install showed the
+  update-snapshot wrapper (`/usr/local/sbin/void-xbps-snap`, which shadows
+  `xbps-install`) taking **no** snapper pair for a system update driven from
+  GNOME Software: its `_should_snap` matcher only recognised the short xbps
+  flags (`-S`, `-Su*`, `-u`, `-U`) while the store's xbps backend spawns
+  `xbps-install --sync --update --yes`, so every argument fell through the
+  `--*` branch and the wrapper took its no-snapshot fast path — the update
+  happened, and nothing was rollback-able (`[PKG-SNAP-LONGOPT]`). 3.2.04 also
+  accepts `--sync`, `--update` and `--upgrade`. Unlike the 3.2.03 pin this is
+  not a boot-safety bump: an image below 3.2.04 still installs and boots, but
+  every GUI-driven system update it provisions is unrollback-able. Keep this
+  pin at or above the newest installer.
+- **[INSTALLER-REF-3.2.03]** Bump the shipped-Installer pin
+  `Version-3.2.02` → `Version-3.2.03`. The first fresh GNOME install made by
+  3.2.02 exposed a real first-boot race: a dbus-activatable
+  `org.freedesktop.login1.service` stub let elogind be started twice, and GDM
+  could come up before logind had registered `seat0` — the 2026-10-30 box
+  needed **three** boots to reach a login prompt. 3.2.03 fixes both
+  (`[ELOGIND-NO-DBUS-ACTIVATION]` renames the activation stub out of the way so
+  the runit service is the only starter; `[GDM-WAIT-LOGIND]` makes GDM wait for
+  seat0), and both are self-healing: pristine copies live in `/root/tools/` and
+  `rc.local` re-applies them by hash on every boot, at the cost of two accepted
+  `xbps-pkgdb -a` rows. An image pinned to 3.2.02 provisions the race on any
+  GDM desktop. Keep this pin at or above the newest installer.
+- **[INSTALLER-REF-3.2.02]** Bump the shipped-Installer pin
+  `Version-3.2.01` → `Version-3.2.02`. The GNOME Software store
+  (`[GNOME-SOFTWARE-STORE]`) only ships from 3.2.02: an image pinned to 3.2.01
+  provisions **nothing** for a GNOME desktop, so GNOME Software is either
+  absent or Void's stock `gnome-software-50.2_1` — flatpak-only, with no
+  `xbps-backend.so`, i.e. it cannot see the system's xbps packages. 3.2.02
+  installs the store build (same upstream 50.2, with the native backend) via
+  the same discipline Discover uses: repodata probe → `61-gnome-software.conf`
+  → a dedicated key-importing sync on the installer's own pipe → a
+  machine-checked trust anchor (pin `9bdf4599…0d60`) → `xbps-install -R
+  <store>` → an installed-origin assertion. It also fixes that helper's
+  availability fallback, which in the earlier code installed no Software app at
+  all (the `gnome` metapackage carries no `gnome-software` run-depend). Keep
+  this pin at or above the newest installer that carries every desktop store.
+- **[INSTALLER-REF-3.2.01]** Bump the shipped-Installer pin
+  `Version-3.1.00` → `Version-3.2.01`. The Discover integration
+  (`[DISCOVER-STORE]`) only ships from 3.2.00, and the repo-order fix
+  (`[DISCOVER-STORE-REPO-ORDER]`) only ships from 3.2.01: an image pinned to
+  3.1.00 provisions **no** Discover store at all, and one pinned to 3.2.00
+  installs the **stock** `discover` from the official repo — `xbps-install
+  <name>` resolves against the first repository in config order
+  (`00-repository-main.conf` sorts before `60-discover.conf`), so the store's
+  `discover-6.7.5_7` was never seen and the result had no `xbps-backend.so`,
+  i.e. Discover managed flatpaks only. 3.2.01 prepends the store repository for
+  that one transaction and asserts the installed origin afterwards. Keep this
+  pin at or above the newest installer that fixes both.
 - **[INSTALLER-FETCH]** Stop vendoring the Installer; fetch it from the public
   repo at build time. `lib.sh` gains `installer_fetch` (repo/ref configurable via
   `INSTALLER_REPO` / `INSTALLER_REF`, default
