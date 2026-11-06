@@ -13,6 +13,25 @@ commit lists the underlying source commits.
 
 ### Interop
 
+- **[INSTALLER-REF-3.2.06]** Bump the shipped-Installer pin
+  `Version-3.2.04` → `Version-3.2.06`, and this one **is** boot-safety. 3.2.03's
+  `[ELOGIND-NO-DBUS-ACTIVATION]` rename of
+  `/usr/share/dbus-1/system-services/org.freedesktop.login1.service` broke KDE:
+  Void's stock `/etc/sv/sddm/run` (`sddm-0.21.0_2`) is `set -e` +
+  `dbus-send … StartServiceByName string:org.freedesktop.login1` followed by
+  `exec sddm`, and `StartServiceByName` fails with `ServiceUnknown` once the
+  activation file is gone — even though the name is currently owned — so the
+  script died rc=1 before `exec sddm` and runsv never started SDDM. A fresh
+  `Version-3.2.05` KDE install (2026-11-05) therefore booted to a text login on
+  tty1 with no graphical session at all. 3.2.06 ships `[SDDM-WAIT-LOGIND]`
+  (bounded wait for `/run/systemd/seats/seat0`, then `exec sddm` regardless of
+  the verdict) plus the same self-healing pattern 3.2.03 used for GDM: the
+  stock script is kept at `/etc/sv/sddm/run.orig`, the canonical copy lives in
+  `/root/tools/sddm.run.fixed`, and `re-fix-sddm-run.sh` is re-run from
+  `rc.local` every boot so a `sddm` package update cannot silently restore the
+  broken script (one more accepted `xbps-pkgdb -a` row). An image pinned below
+  3.2.06 hands a KDE box a desktop-less first boot. Keep this pin at or above
+  the newest installer. The 3.2.04 `[PKG-SNAP-LONGOPT]` fix rides along.
 - **[INSTALLER-REF-3.2.04]** Bump the shipped-Installer pin
   `Version-3.2.03` → `Version-3.2.04`. The same fresh GNOME install showed the
   update-snapshot wrapper (`/usr/local/sbin/void-xbps-snap`, which shadows

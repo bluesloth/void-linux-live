@@ -370,7 +370,19 @@ INSTALLER_REPO="${INSTALLER_REPO:-bluesloth/void-linux-installer}"
 # pin — an image below 3.2.04 still installs and boots fine — but a box built
 # from it can never roll back a store update, so keep this pin at or above the
 # newest installer.
-INSTALLER_REF="${INSTALLER_REF:-Version-3.2.04}"
+#
+# Moved Version-3.2.04 -> Version-3.2.06 for a BOOT-SAFETY reason this time.
+# 3.2.03's [ELOGIND-NO-DBUS-ACTIVATION] rename of the logind D-Bus activation
+# file broke the stock /etc/sv/sddm/run: it runs `set -e` +
+# `dbus-send ... StartServiceByName string:org.freedesktop.login1`, that call
+# fails with ServiceUnknown once the .service file is gone (even though the
+# name is owned), and the script dies before `exec sddm` — so a fresh KDE
+# install boots to a text login with no graphical session. 3.2.06 ships
+# [SDDM-WAIT-LOGIND], which waits (bounded) for /run/systemd/seats/seat0 and
+# then execs sddm regardless, plus a boot-time re-fix so a `sddm` package
+# update cannot restore the broken script. An image pinned below 3.2.06 hands
+# a KDE box a desktop-less first boot, so this pin must stay at or above it.
+INSTALLER_REF="${INSTALLER_REF:-Version-3.2.06}"
 INSTALLER_BASENAME="${INSTALLER_BASENAME:-Void_Linux_Installer.sh}"
 INSTALLER_URL_BASE="${INSTALLER_URL_BASE:-https://raw.githubusercontent.com}"
 
