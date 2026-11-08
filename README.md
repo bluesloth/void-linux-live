@@ -162,7 +162,7 @@ Live images built from this repository enable persistent storage: the boot
 cmdline contains `rd.overlay=LABEL=VOID_OVL`. When such an ISO is booted from a
 USB stick that carries a partition labeled `VOID_OVL`, dracut mounts it as the
 writable overlay: everything changed while running the live system (installed
-packages, opencode, configuration, files) survives reboots. Without such a
+packages, configuration, files) survives reboots. Without such a
 partition the system boots ephemeral as usual.
 
 Flash an ISO with a persistence partition in one step:
@@ -260,7 +260,11 @@ beside it, which point at the same `void-installer-launch` wrapper — ask
 `update --if-newer --ref main` through the privilege helper; bare Enter and
 every failure mode (no network, a RAM-only overlay, no updater on the image, no
 privilege helper) fall through to the local copy, so the check can never block
-an install.
+an install.  The launcher renders on the desktop of every desktop environment
+that ships a desktop-icon surface (KDE/Plasma, Xfce, MATE, Cinnamon, LXDE,
+LXQt, Enlightenment); on gnome and cosmic, which have none, it appears in the
+application menu instead — gnome enables Desktop Icons NG
+(`ding@rastersoft.com`) so `~/Desktop` renders there too.
 
 The same tool, run directly from a terminal on the booted stick
 (`U=/usr/local/share/void-installer-update/installer-update-tool.sh`):

@@ -93,6 +93,36 @@ EOF
             fi
             echo "=> applied Cinnamon desktop extras"
             ;;
+        gnome)
+            # [GNOME-DESKTOP-ICONS] GNOME ships no desktop-icon component, so
+            # ~/.desktop entries never render on the GNOME desktop.  Enable the
+            # Desktop Icons NG extension (ding@rastersoft.com, provided by the
+            # gnome-shell-extensions package mkiso.sh added) so
+            # ~/Desktop/install-void-linux.desktop shows on first login.
+            mkdir -p "$ROOTFS/etc/dconf/profile" "$ROOTFS/etc/dconf/db/local.d"
+            cat > "$ROOTFS/etc/dconf/profile/user" << 'EOF'
+user-db:user
+system-db:local
+EOF
+            cat > "$ROOTFS/etc/dconf/db/local.d/00-void-installer-desktop-icons" << EOF
+[org/gnome/shell]
+enabled-extensions=['ding@rastersoft.com']
+EOF
+            if [ -x "$ROOTFS/usr/bin/dconf" ]; then
+                chroot "$ROOTFS" dconf update >/dev/null 2>&1 || \
+                    echo "WARNING: dconf update failed (GNOME desktop icons may not appear)"
+            fi
+            echo "=> enabled GNOME Desktop Icons NG (ding@rastersoft.com)"
+            ;;
+        cosmic)
+            # [COSMIC-DESKTOP-FALLBACK] COSMIC is Wayland-first and has no
+            # desktop-icon surface, so ~/Desktop never renders.  The Installer
+            # entry is instead registered in the per-user applications dir
+            # (seeded by setup_installer_desktop() in mkiso.sh) so it shows in
+            # the application menu on every COSMIC session instead.  Nothing to
+            # do here at build time.
+            :
+            ;;
     esac
 
     # [LIGHTDM-GREETER-BG] Point the LightDM greeter at a real wallpaper so the

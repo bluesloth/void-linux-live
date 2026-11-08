@@ -230,6 +230,16 @@ Categories=System;
 Keywords=install;installer;setup;void;
 EOF
     chmod 0755 "$INCLUDEDIR"/etc/skel/Desktop/install-void-linux.desktop
+
+    # Register the launcher in the per-user applications dir as well, so it
+    # shows in the application menu on every desktop — including gnome and
+    # cosmic, which have no desktop-icon surface and therefore never render
+    # ~/Desktop.  (The Void_Linux_Installer.sh symlink stays Desktop-only; it
+    # is a convenience shortcut, not the menu entry.)
+    mkdir -p "$INCLUDEDIR"/etc/skel/.local/share/applications
+    cp "$INCLUDEDIR"/etc/skel/Desktop/install-void-linux.desktop \
+        "$INCLUDEDIR"/etc/skel/.local/share/applications/install-void-linux.desktop
+    chmod 0644 "$INCLUDEDIR"/etc/skel/.local/share/applications/install-void-linux.desktop
 }
 
 setup_pipewire() {
@@ -532,7 +542,10 @@ build_variant() {
             GRAPHICAL=yes
         ;;
         gnome)
-            PKGS="$PKGS $XORG_PKGS gnome firefox"
+            # gnome-shell-extensions provides the Desktop Icons NG extension
+            # (ding@rastersoft.com), which postsetup.sh enables so the
+            # Installer's ~/.desktop entry renders on the GNOME desktop.
+            PKGS="$PKGS $XORG_PKGS gnome gnome-shell-extensions firefox"
             SERVICES="$SERVICES dbus gdm NetworkManager polkitd"
             SDDM_SESSION=gnome.desktop
             DE_DM=gdm

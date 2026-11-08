@@ -278,6 +278,12 @@ via the privilege helper. No network, a RAM-only overlay, a missing updater or
 a missing helper all warn and continue with the local copy: the check never
 blocks an install.
 
+The launcher renders on the desktop of every desktop environment that ships a
+desktop-icon surface (KDE/Plasma, Xfce, MATE, Cinnamon, LXDE, LXQt,
+Enlightenment); on gnome and cosmic, which have none, it appears in the
+application menu instead — gnome enables Desktop Icons NG
+(`ding@rastersoft.com`) so `~/Desktop` renders there too.
+
 Or run the baked copy directly on the booted stick:
 
 ```sh

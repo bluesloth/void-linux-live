@@ -151,6 +151,18 @@ commit lists the underlying source commits.
   it as root in a terminal (`Terminal=true`; a `void-installer-launch` shim
   prefers `pkexec`, falls back to `sudo`). Gated on `WANT_INSTALLER`
   (x86_64/i686); no new pinned input.
+- **[LIVE-DESKTOP-ICONS]** Surface the Installer on the live desktop of *every*
+  desktop environment, not only KDE.  `setup_installer_desktop()` now also
+  registers `install-void-linux.desktop` in
+  `/etc/skel/.local/share/applications`, so the launcher shows in the
+  application menu on all DEs — the fallback for gnome and cosmic, which have
+  no desktop-icon surface and never render `~/Desktop`.  For gnome, `mkiso.sh`
+  adds `gnome-shell-extensions` and `postsetup.sh` enables the Desktop Icons NG
+  extension (`ding@rastersoft.com`) via dconf so
+  `~/Desktop/install-void-linux.desktop` renders on first login.  `/etc/skel`
+  is copied into the live user's home by the dracut `vmklive/adduser.sh`
+  `useradd -m` at boot, so seeding was never the gap — only per-DE rendering
+  was.
 - **[LIVE-INSTALLER-CHECK]** On booting the live USB, both desktop entries — the
   `Install Void Linux.desktop` launcher *and* the `Void_Linux_Installer.sh`
   symlink, which now points at the same `void-installer-launch` wrapper instead

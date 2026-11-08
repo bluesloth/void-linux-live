@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Build a Void Linux live ISO (opencode-ready userland) with a selectable
+# Build a Void Linux live ISO with a selectable
 # desktop environment and greeter, and/or flash it onto a USB stick with a
 # persistent overlay partition.  The default is KDE Plasma + SDDM; every other
 # pairing mirrors void-installer (see --desktop / --greeter below).
@@ -1430,7 +1430,7 @@ flash() {
     echo "files) are saved to $PART and survive reboots."
     echo "Note: persistence activates only if the ISO was built with 'build --persist';"
     echo "otherwise the boot cmdline lacks rd.overlay=LABEL=VOID_OVL and $PART is unused."
-    echo "Boot the stick, pick the default entry, install opencode or anything else,"
+    echo "Boot the stick, pick the default entry, install anything else,"
     echo "reboot, and the changes are still there."
 }
 
