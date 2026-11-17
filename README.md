@@ -222,16 +222,42 @@ sudo ./voidlive-build-persist.sh build --persist --seed-cache --both \
   `--replace-cache` deletes all cached `*.xbps`/`*.sig2` first, then refreshes —
   for building a fresh stamp set.
 
-`--seed-cache` also deposits a self-contained cache updater alongside the
-cache. On the booted persistent stick it's `/xbps-cache-tool.sh` and lets the
-stick keep its own cache fresh without the build host:
+`--seed-cache` also deposits the cache updater from this tree
+(`xbps-cache-tool.sh`) alongside the cache. On the booted persistent stick it
+is `/xbps-cache-tool.sh`; copying that one file over an existing stick's copies
+upgrades it without a reflash. XBPS reuses a cached package only when its exact
+pkgver matches what the repository offers, so refreshing the index alone still
+leaves older payloads ignored during an install. `update` therefore downloads
+the current repository version of every cached package and prunes the
+superseded ones:
 
 ```
-sudo /xbps-cache-tool.sh status                     # cache dir + package count
-sudo /xbps-cache-tool.sh update                     # refresh index (/var/db/xbps), keep packages
-sudo /xbps-cache-tool.sh replace                    # wipe *.xbps/*.sig2 + refresh
-sudo /xbps-cache-tool.sh replace --pkgs 'kde-plasma' # wipe + refresh + re-download
-sudo /xbps-cache-tool.sh download --pkgs 'base-system' # refresh + download
+sudo /xbps-cache-tool.sh status                      # cache dir, package count, peer copy
+sudo /xbps-cache-tool.sh update                      # index + current payloads + prune
+sudo /xbps-cache-tool.sh update --dry-run            # show what would change
+sudo /xbps-cache-tool.sh index                       # index only (old update behaviour)
+sudo /xbps-cache-tool.sh replace                     # wipe + re-download the cached set
+sudo /xbps-cache-tool.sh replace --pkgs 'kde-plasma' # wipe + re-download a specific set
+sudo /xbps-cache-tool.sh download --pkgs 'base-system' # refresh + download (deps included)
+sudo /xbps-cache-tool.sh update --repo https://example.org/void-current
+```
+
+`--repo <url>` adds a repository for that run only (repeatable), so a cache
+holding packages from a repo the host does not configure — a desktop tree such
+as the cosmic one — can still be brought current without editing
+`/etc/xbps.d`.
+
+`update` never downgrades: when the cached version of a name is newer than the
+repository candidate (typically because the name comes from a repo the host
+does not configure), it is reported `newer than repo (kept)` and left alone
+instead of being replaced by an older payload.
+
+`--skip <pkg>` (repeatable) excludes packages from the update without touching
+their cached payloads — useful while a repository publishes a broken package:
+
+```sh
+sudo ./xbps-cache-tool.sh update --repo https://example.org/void-current \
+  --skip some-package
 ```
 
 It auto-detects `/xbps-cachedir-<arch>` on the live-overlay root, the dracut
@@ -241,7 +267,11 @@ same first-wins rules the installer's `_local_cache_detect()` uses, so it
 always targets the cache an install would auto-pick. The cache and tool are
 seeded both at the partition root and inside the dmsquash-live overlay upperdir,
 so they're reachable whether dracut holds the partition as the overlay or udisks
-auto-mounts it under `/run/media`.
+auto-mounts it under `/run/media`. `update`/`replace`/`download` also keep the
+other seeded copy in sync (current payloads copied, superseded versions
+pruned), so a host-side refresh is visible on the next boot. On a non-Void host
+with podman or docker the tool re-execs itself in the Void image, so the stick
+can be refreshed from any Linux box.
 
 ## Updating the Installer on a live stick
 

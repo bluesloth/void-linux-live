@@ -250,7 +250,7 @@ sudo ./voidlive-build-persist.sh build --grub
 | `--cache <dir>` | Use a specific package cache. Default: `./xbps-cachedir-<arch>` in this folder. If that is missing/empty, a populated cache under `/run/media` is auto-detected. An explicit `--cache` always wins. |
 | `--refresh-cache` | Refresh the repo index, then pull current versions into the cache. |
 | `--replace-cache` | Wipe the cache (`*.xbps` / `*.sig2`), refresh, and re-download cleanly. |
-| `--seed-cache` | During **flash**, copy the cache into the `VOID_OVL` partition (root **and** the dmsquash-live overlay upperdir, reusable by a later installer run) and drop `/xbps-cache-tool.sh` alongside it to update/replace it on the live system. |
+| `--seed-cache` | During **flash**, copy the cache into the `VOID_OVL` partition (root **and** the dmsquash-live overlay upperdir, reusable by a later installer run) and drop `/xbps-cache-tool.sh` (copied from this tree) alongside it to refresh it on the live system. |
 
 ```sh
 sudo ./voidlive-build-persist.sh build --persist --refresh-cache
@@ -261,6 +261,47 @@ sudo ./voidlive-build-persist.sh build --cache /run/media/you/STICK/xbps-cachedi
 
 `--seed-cache` is only meaningful together with `flash` (it writes into the
 overlay partition). A missing cache is a warning, not a failure.
+
+### Refreshing a seeded cache (`xbps-cache-tool.sh`)
+
+XBPS reuses a cache entry only when its **exact pkgver** matches what the repo
+offers, so an index-only refresh leaves older payloads ignored by the
+installer. The seeded cache therefore has to be updated package-by-package.
+
+Run on the booted stick (`/xbps-cache-tool.sh`), or on a host with the stick
+plugged in (`./xbps-cache-tool.sh`, auto-detects the cache):
+
+```sh
+sudo ./xbps-cache-tool.sh status                    # cache dir, count, peer copy
+sudo ./xbps-cache-tool.sh update                    # index + current payloads + prune
+sudo ./xbps-cache-tool.sh update --dry-run          # what would change
+sudo ./xbps-cache-tool.sh update --keep-old         # keep superseded versions
+sudo ./xbps-cache-tool.sh index                     # index only (old behaviour)
+sudo ./xbps-cache-tool.sh replace                   # wipe + re-download cached set
+sudo ./xbps-cache-tool.sh download --pkgs 'nano'    # refresh + download set (+deps)
+sudo ./xbps-cache-tool.sh update --repo https://example.org/void-current
+sudo ./xbps-cache-tool.sh update --skip some-package  # leave one payload alone
+```
+
+`update` compares each cached pkgver against the repo map, downloads the
+current version where one is missing, then prunes superseded versions **only**
+for names that now have a current payload — a failed download never deletes
+the old one. Names that no configured repo provides are reported
+`not in any repo (kept)` and left untouched. `update`/`replace`/`download`
+also sync the other seeded copy (`VOID_OVL` root ↔ dmsquash-live upperdir) so
+the live boot sees the refresh; packages that exist **only** in the peer copy
+are downloaded there too, not just copied. `--repo <url>` adds a repository for
+that run only (repeatable) when the cache holds packages from a repo this host
+does not configure (e.g. a desktop tree such as the cosmic one); `--skip <pkg>`
+(repeatable) leaves the cached payload of a named package alone, e.g. while a
+repository ships a broken signature. It never downgrades: a cached version
+newer than the repo candidate is reported `newer than repo (kept)` and left
+alone. On a non-Void
+host with podman/docker the tool re-execs itself in
+`ghcr.io/void-linux/void-glibc-full` — so the stick can be refreshed from any
+Linux box. Upgrade an existing stick by copying the new
+`xbps-cache-tool.sh` over both copies (`<mount>/xbps-cache-tool.sh`,
+`<mount>/LiveOS/overlay-*/xbps-cache-tool.sh`); no reflash needed.
 
 ## Updating the Installer on a stick
 

@@ -62,11 +62,13 @@ set -eu
 #                         overlay upperdir (LiveOS/overlay-<label>-<uuid>/), so it is
 #                         reachable whether dracut holds the partition as the overlay
 #                         or udisks mounts it under /run/media. ALSO deposits
-#                         xbps-cache-tool.sh alongside it: a self-contained updater
-#                         (/xbps-cache-tool.sh on the booted persistent live system)
-#                         that can status/update/replace/download the seeded cache
-#                         with the same refresh/wipe semantics as
-#                         --refresh-cache/--replace-cache.
+#                         xbps-cache-tool.sh alongside it (from this tree):
+#                         on the booted persistent live system it is
+#                         /xbps-cache-tool.sh, and 'update' downloads the
+#                         CURRENT repository version of every cached package
+#                         (an index-only refresh is not enough: XBPS ignores
+#                         outdated payloads) and prunes the superseded ones.
+#                         'index' keeps the old index-only behaviour.
 #   build --watch         Wrap the build in builder-watch.sh: a background
 #                         watchdog that detects a stalled download (.part files
 #                         stop advancing) on a flaky/uplink-tethered host,
@@ -203,7 +205,11 @@ build [--persist] [--desktop <de>] [--greeter <g>] [--cache <dir>] [--refresh-ca
     flash (both at the partition root and inside the dmsquash-live overlay
     upperdir), so a later install can reuse the packages from disk, and
     deposits xbps-cache-tool.sh alongside it: /xbps-cache-tool.sh on the
-    booted persistent live system (status/update/replace/download the cache).
+    booted persistent live system. Its 'update' downloads the current
+    repository version of every cached package and prunes superseded ones, so
+    the installer no longer ignores outdated payloads; 'index' refreshes the
+    repository index only; 'replace' rebuilds the cache; 'download --pkgs'
+    fetches a specific set.
     The Installer baked into every image refreshes itself on the booted stick:
     double-click the desktop Install shortcut, which offers to check GitHub and
     runs the baked
@@ -324,229 +330,19 @@ _cache_maintain() {
     fi
 }
 
-# Deposit the self-contained cache-maintenance tool into the VOID_OVL partition
-# (written via temp-file + mv so a mid-write power cut can never leave a
-# truncated tool on the stick). On the booted persist live system it sits at
-# /xbps-cache-tool.sh and can update / replace the seeded /xbps-cachedir-<arch>
-# with the same semantics this script's --refresh-cache / --replace-cache use.
+# Deposit the cache-maintenance tool into the VOID_OVL partition (written via
+# temp-file + mv so a mid-write power cut can never leave a truncated tool on
+# the stick). The tool itself lives in this tree as ./xbps-cache-tool.sh, so an
+# existing stick can also be refreshed by copying that one file over the old
+# copies at <mount>/xbps-cache-tool.sh and
+# <mount>/LiveOS/overlay-<label>-<uuid>/xbps-cache-tool.sh.
 _deposit_cache_tool() {
     _dt_root="${1:?deposit root dir missing}"
+    [ -f ./xbps-cache-tool.sh ] || die "xbps-cache-tool.sh not found next to $0"
     mkdir -p "$_dt_root"
     _dt_dest="$_dt_root/xbps-cache-tool.sh"
     _dt_tmp="$_dt_root/.xbps-cache-tool.sh.tmp.$$"
-    cat > "$_dt_tmp" <<'XBPS_CACHE_TOOL_EOF'
-#!/usr/bin/env sh
-set -eu
-
-# xbps-cache-tool.sh -- maintain the XBPS package cache this stick carries.
-# Deposited by voidlive-build-persist.sh (build --persist --seed-cache --flash)
-# into the root of the VOID_OVL persistence partition AND into the dmsquash-live
-# overlay upperdir (LiveOS/overlay-<label>-<uuid>/); on the booted persistent
-# live system it is /xbps-cache-tool.sh and the seeded cache is
-# /xbps-cachedir-<arch>. On a regular Linux box (or a non-persistent boot) the
-# cache (and walk) is auto-detected at the live-overlay root, the dracut overlay
-# mountpoints, and under /run/media with the SAME first-wins rules the
-# Void_Linux_Installer / _local_cache_detect() uses, so this tool always targets
-# the cache an install would auto-pick.
-#
-#   status                         print the resolved cache location + package count
-#   update                         refresh the repository index (keep packages)
-#   replace                        wipe all *.xbps/*.sig2, refresh the index
-#   replace --pkgs 'pkg ...'       wipe, refresh, then re-download the listed packages
-#   download --pkgs 'pkg ...'      refresh, then download the listed packages
-#
-# Options:
-#   --cache <dir>     pin the cache directory (auto-detect otherwise)
-#   --pkgs '<pkg...>' space-separated package list for download / replace
-#
-# Examples:
-#   /xbps-cache-tool.sh status
-#   /xbps-cache-tool.sh update
-#   /xbps-cache-tool.sh replace
-#   /xbps-cache-tool.sh replace --pkgs 'base-system kde-plasma'
-#   /xbps-cache-tool.sh download --pkgs 'base-system kde-plasma'
-#
-# update / replace / download must run as root (repodata refresh + downloads
-# write into the cache). status works for anyone.
-
-CACHE_DIR=
-CMD=
-PKGS=
-
-warn() { echo "WARN: $*" >&2; }
-die()  { echo "FATAL: $*" >&2; exit 1; }
-need_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
-
-usage() {
-    echo "Usage: $(basename "$0") <status|update|replace|download> [options]"
-    echo "  status            print the resolved cache dir + package count"
-    echo "  update            refresh the repository index (keep existing packages)"
-    echo "  replace           wipe all *.xbps/.sig2, then refresh the index"
-    echo "  download          refresh, then download packages (--pkgs required)"
-    echo "  --cache <dir>     pin the cache directory"
-    echo "  --pkgs '<pkg...>' package list for download/replace"
-    exit 0
-}
-
-# newest-first candidate cache dirs: live-overlay root, the dracut overlay
-# mountpoints (a persistent VOID_OVL partition is held by dracut there and is
-# often not auto-mounted by udisks), then /run/media depth-1 and depth-2 (the
-# udisks /<user>/<uuid> layout)
-_cache_candidates() {
-    ls -1dt /xbps-cachedir-* \
-        /run/initramfs/overlayfs/xbps-cachedir-* \
-        /run/overlayfs-backing/xbps-cachedir-* \
-        /run/media/*/xbps-cachedir-* \
-        /run/media/*/*/xbps-cachedir-* 2>/dev/null || true
-}
-
-# Prefer a POPULATED, writable, arch-matching dir; fall back to any writable,
-# arch-matching dir (an empty one can be seeded by update).
-_cache_detect() {
-    _ca=$(uname -m)
-    _fallback=
-    for _cd in $(_cache_candidates); do
-        [ -n "$_cd" ] || continue
-        [ -d "$_cd" ] || continue
-        case "$_cd" in
-            *"xbps-cachedir-${_ca}") : ;;
-            *) continue ;;
-        esac
-        [ -w "$_cd" ] || continue
-        if [ -n "$(find "$_cd" -maxdepth 1 -name '*.xbps' -print -quit 2>/dev/null)" ]; then
-            printf '%s\n' "$_cd"
-            unset _ca _cd
-            return 0
-        fi
-        [ -n "$_fallback" ] || _fallback="$_cd"
-    done
-    if [ -n "$_fallback" ]; then
-        printf '%s\n' "$_fallback"
-        unset _ca _cd _fallback
-        return 0
-    fi
-    unset _ca _cd _fallback
-    return 1
-}
-
-_cache_resolve() {
-    if [ -n "$CACHE_DIR" ]; then
-        printf '%s\n' "$CACHE_DIR"
-    else
-        _d=$(_cache_detect || true)
-        if [ -n "$_d" ]; then
-            printf '%s\n' "$_d"
-        else
-            printf '%s\n' "/xbps-cachedir-$(uname -m)"
-        fi
-        unset _d
-    fi
-}
-
-_ensure() {
-    [ -d "$1" ] || mkdir -p "$1"
-    [ -w "$1" ] || die "cache dir '$1' is not writable (run as root? medium read-only?)"
-}
-
-_refresh() {
-    echo "==> refreshing repository index (lands under /var/db/xbps, not the cache) for $1"
-    xbps-install -S -c "$1" >/dev/null 2>&1 \
-        || warn "index refresh failed (network/repo?); continuing with existing data."
-    echo "    done."
-}
-
-_wipe() {
-    echo "==> wiping *.xbps/*.sig2 from $1/"
-    find "$1" -maxdepth 1 \( -name '*.xbps' -o -name '*.sig2' \) -delete 2>/dev/null || true
-}
-
-_download() {
-    _scratch=$(mktemp -d /tmp/xbps-cache-tool.XXXXXX)
-    trap 'rm -rf "$_scratch"' EXIT
-    echo "==> downloading into cache: $2"
-    # shellcheck disable=SC2086
-    xbps-install -r "$_scratch" -c "$1" -y $PKGS || \
-        warn "download failed (network/mirror?); packages already fetched stay in the cache."
-}
-
-cmd_status() {
-    _c=$(_cache_resolve)
-    if [ -d "$_c" ]; then
-        _n=$(find "$_c" -maxdepth 1 -name '*.xbps' 2>/dev/null | wc -l)
-        _s=$(du -sh "$_c" 2>/dev/null | awk '{print $1}')
-        _w=yes; [ -w "$_c" ] || _w=no
-        echo "cache:   $_c"
-        echo "arch:    $(uname -m)"
-        echo "packages: $_n ($_s)"
-        echo "writable: $_w"
-        [ "$_w" = "no" ] && echo "NOTE: not writable -- update/replace will fail." >&2
-    else
-        echo "no cache yet at $_c"
-        echo "run '$0 update' to create it and refresh the repository index."
-    fi
-    return 0
-}
-
-cmd_update() {
-    [ "$(id -u)" -eq 0 ] || die "update requires root (status works without)"
-    _c=$(_cache_resolve)
-    _ensure "$_c"
-    _refresh "$_c"
-    echo "update complete: $_c"
-}
-
-cmd_replace() {
-    [ "$(id -u)" -eq 0 ] || die "replace requires root (status works without)"
-    _c=$(_cache_resolve)
-    _ensure "$_c"
-    _wipe "$_c"
-    _refresh "$_c"
-    if [ -n "$PKGS" ]; then
-        _download "$_c" "$PKGS"
-    fi
-    echo "replace complete: $_c"
-}
-
-cmd_download() {
-    [ "$(id -u)" -eq 0 ] || die "download requires root (status works without)"
-    [ -n "$PKGS" ] || die "download requires --pkgs '<pkg ...>'"
-    _c=$(_cache_resolve)
-    _ensure "$_c"
-    _refresh "$_c"
-    _download "$_c" "$PKGS"
-    echo "download complete: $_c"
-}
-
-
-
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        status|update|replace|download) CMD="$1"; shift ;;
-        --cache)
-            [ "$#" -ge 2 ] || die "--cache requires a directory"
-            CACHE_DIR=$(readlink -f "$2" 2>/dev/null || echo "$2")
-            shift 2
-            ;;
-        --cache=*) CACHE_DIR="${1#*=}"; shift ;;
-        --pkgs)
-            [ "$#" -ge 2 ] || die "--pkgs requires a package list"
-            PKGS="$2"
-            shift 2
-            ;;
-        -h|--help) usage ;;
-        *) die "unknown argument: $1 (try --help)" ;;
-    esac
-done
-
-[ -n "$CMD" ] || usage
-
-case "$CMD" in
-    status)   cmd_status ;;
-    update)   cmd_update ;;
-    replace)  cmd_replace ;;
-    download) cmd_download ;;
-esac
-XBPS_CACHE_TOOL_EOF
+    cp ./xbps-cache-tool.sh "$_dt_tmp"
     chmod 0755 "$_dt_tmp"
     mv -f "$_dt_tmp" "$_dt_dest"
     echo "Deposited cache updater: $_dt_dest"
@@ -1423,7 +1219,7 @@ flash() {
     fi
     if [ "$SEED_CACHE" = "yes" ] && [ -d "$CACHE_DIR" ]; then
         echo "  seeded cache: $CACHE_DIR (reusable by the installer)"
-        echo "  cache updater: /xbps-cache-tool.sh on the booted stick (update/replace/download)"
+        echo "  cache updater: /xbps-cache-tool.sh on the booted stick (update pulls current packages)"
     fi
     echo
     echo "Changes made while running the live system (installed packages, config,"

@@ -11,6 +11,56 @@ commit lists the underlying source commits.
 
 ## Unreleased
 
+### Cache
+
+- **[CACHE-PAYLOAD-UPDATE]** `xbps-cache-tool.sh` now refreshes **package
+  payloads**, not just the repository index — the old `update` refreshed
+  `/var/db/xbps` and left every cached `*.xbps` at its seeded pkgver, which
+  XBPS then ignored because cache lookups are keyed by exact pkgver. The tool
+  is now a tracked file in this tree (was a heredoc inside
+  `voidlive-build-persist.sh`) and `--seed-cache` simply deposits it, so an
+  existing stick is upgraded by copying that one file over
+  `<mount>/xbps-cache-tool.sh` and
+  `<mount>/LiveOS/overlay-*/xbps-cache-tool.sh`. Command split: `update`
+  (`upgrade`) = index refresh + download the current version of every cached
+  package + prune the superseded versions; `index` (`refresh`) = the old
+  index-only behaviour; `replace` = wipe + re-download the captured package
+  set (or `--pkgs`); `download --pkgs` unchanged. New `--dry-run` and
+  `--keep-old`, and `--repo <url>` (repeatable) which adds a repository for
+  that run only via XBPS's own `-R`/`--repository`, so a cache holding packages
+  from a repo the host does not configure (e.g. the cosmic tree) can still be
+  brought current without editing `/etc/xbps.d`. Peer synchronisation now also
+  **downloads** packages that exist only in the other seeded copy instead of
+  merely copying (previously an overlay-only package stayed outdated forever),
+  and the peer loop reads from a file so download failures propagate to the
+  exit status (`_download_bulk` also no longer loses its input file to
+  `set --`). `update` never downgrades: a cached pkgver newer than the repo
+  candidate — the normal case for a name that comes from an unconfigured repo,
+  e.g. cosmic's `gnome-software` vs the official build — is reported
+  `newer than repo (kept)` and neither downloaded nor pruned. Retry noise is
+  bounded: the memory-synced repository retry happens at most once per run,
+  names that already failed are skipped by later passes, a single-package
+  failure is not retried individually (it is already isolated), and the final
+  failure list is deduplicated. New `--skip <pkg>` (repeatable) excludes named
+  packages from `update`/`upgrade` and from the peer pass, leaving their cached
+  payloads untouched — useful while a repository publishes a broken package,
+  e.g. the cosmic repo's `cosmic-store-1.11.0_13` whose `.sig2` does not
+  verify. Pruning is conditional: a superseded version is deleted only
+  for a name that actually has a current repo pkgver present in the cache, so
+  a failed download or a disk-full run never destroys the old payload; a name
+  no configured repo provides is reported `not in any repo (kept)` and left
+  alone (31 cosmic packages on a stock live boot). pkgname parsing is
+  `sed 's/-[^-]*_[0-9][0-9]*$//'` (validated against all 20 679 repo pkgvers,
+  matching `xbps-uhelper getpkgname`). Downloads run against a throwaway
+  rootdir seeded with the host's `var/db/xbps` indexes, `keys`, `/etc/xbps.d`
+  **and** `/usr/share/xbps.d` (stock Void keeps the main repo in the latter), so
+  nothing is installed into the host; `/usr/bin/xbps-install.real` is preferred
+  when present so a host wrapper (the snapper `void-xbps-snap`) does not fire.
+  `update`/`replace`/`download` keep both seeded copies in sync (copy current
+  payloads to the peer, prune there too), and a non-Void host re-execs the tool
+  in `ghcr.io/void-linux/void-glibc-full` via podman/docker
+  (`XBPS_CACHE_TOOL_IMAGE` / `XBPS_CACHE_TOOL_RUN_IN=container|native`).
+
 ### Interop
 
 - **[INSTALLER-REF-3.2.06]** Bump the shipped-Installer pin
