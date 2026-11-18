@@ -321,68 +321,41 @@ set_cachedir() {
 # The live image (mkiso.sh) and the netboot image (mknet.sh) SHIP the
 # Void_Linux_Installer as /usr/bin/void-installer.  It is deliberately NOT
 # vendored in this tree: it is downloaded from the public repo at build time so
-# that every build carries the current installer, with no pinned copy to lag
-# behind.  For a reproducible build, pin a release (or a commit):
+# that every build carries the CURRENT installer from `main`, with no pinned
+# copy to lag behind.  This is the same default the on-stick updater uses
+# (installer-update-tool.sh: `REF="${INSTALLER_REF:-main}"`), so a freshly built
+# ISO and a stick refreshed by that tool resolve the same ref.
 #
-#     INSTALLER_REF=v2.9.95 ./mkiso.sh -b base
+# `main` is a moving target — an unpinned build is intentionally NOT
+# reproducible.  For a reproducible build, pin a tag or commit explicitly:
+#
+#     INSTALLER_REF=Version-3.2.06 ./mkiso.sh -b base
+#
+# IMPORTANT: a tag NAME is not version identity.  The tag `Version-3.3.00`,
+# for example, ships a script that self-reports `Version-3.2.07` (its release
+# export was cut from 3.2.07-era source).  Always trust the resolved
+# `SCRIPT_VERSION` + sha256 below, never the ref name.
 #
 # The resolved version and SHA-256 are printed at build time and recorded on
-# the live image (mkiso.sh include_installer), so the installer a given ISO
-# shipped can always be identified after the fact.
+# the live image (mkiso.sh include_installer → /etc/void-linux-live/installer-ref),
+# so the installer a given ISO shipped can always be identified after the fact.
+#
+# HISTORY — why this seam used to carry a pin (do not re-introduce by reflex):
+# from Version-3.1.00 through Version-3.2.06 INSTALLER_REF defaulted to a
+# release tag, each bump forced by a concrete install-time defect:
+#   * 3.2.01 — Discover store + its repo-order fix (3.2.00 installed the stock
+#     discover, 3.1.00 no store at all);
+#   * 3.2.02 — GNOME Software store (3.2.01 provisioned nothing for GNOME);
+#   * 3.2.03 — elogind/GDM boot race (logind seat0 race on first boot);
+#   * 3.2.04 — [PKG-SNAP-LONGOPT] GUI-update snapper pair;
+#   * 3.2.06 — [SDDM-WAIT-LOGIND] boot safety: below it a KDE install boots to
+#     a text login because the stock sddm run script dies at its dbus-send.
+# The operator later chose to track `main` unconditionally ("always pull the
+# current script"), so those boot-safety arguments now apply to keeping `main`
+# current, not to a frozen tag.  Keep the default at `main` unless told
+# otherwise; pinning stays available as an explicit build-time override.
 INSTALLER_REPO="${INSTALLER_REPO:-bluesloth/void-linux-installer}"
-# AI (Big Pickle) CHANGE — Version-3.2.01 [INSTALLER-REF]: pinned to the release
-# TAG rather than `main` so a live ISO always builds against an installer that
-# is frozen on GitHub — the pin is committed only AFTER that tag exists on the
-# remote, otherwise the raw.githubusercontent fetch below would 404 for every
-# build until the installer was published. Overridable at build time as before.
-#
-# Moved Version-3.1.00 -> Version-3.2.01 because the Discover integration
-# ([DISCOVER-STORE]) only ships from 3.2.00 and the repo-order fix
-# ([DISCOVER-STORE-REPO-ORDER]) only ships from 3.2.01: an image pinned to
-# 3.1.00 provisions no Discover store at all, and an image pinned to 3.2.00
-# installs the STOCK discover from the official repo (first repo in config
-# order wins for a bare `xbps-install <name>`), i.e. a build with no
-# xbps-backend.so. Keep this pin at or above the newest installer that fixes
-# both.
-#
-# Moved Version-3.2.01 -> Version-3.2.02 because the GNOME Software store
-# ([GNOME-SOFTWARE-STORE]) only ships from 3.2.02: an image pinned to 3.2.01
-# provisions NOTHING for a GNOME desktop, so GNOME Software is either absent
-# or the stock flatpak-only build. 3.2.02 also fixes the store fallback, which
-# in the earlier code installed no Software app at all. Keep this pin at or
-# above the newest installer that carries every desktop store.
-#
-# Moved Version-3.2.02 -> Version-3.2.03 because the first fresh GNOME install
-# exposed a real first-boot race ([ELOGIND-NO-DBUS-ACTIVATION] +
-# [GDM-WAIT-LOGIND]): a dbus-activatable `org.freedesktop.login1.service` stub
-# let elogind start twice, and GDM could start before logind's seat0 existed, so
-# the box needed three boots to reach a login prompt. 3.2.03 renames the
-# activation stub away, makes GDM wait for seat0, and self-heals both from
-# /root/tools via rc.local on every boot. Below 3.2.03 an image provisions the
-# same race on any GDM desktop. Keep this pin at or above the newest installer.
-#
-# Moved Version-3.2.03 -> Version-3.2.04 because the same fresh GNOME install
-# showed the update-snapshot wrapper taking no rollback pair for a GUI-driven
-# system update ([PKG-SNAP-LONGOPT]): its matcher only knew the SHORT xbps
-# flags, and GNOME Software spawns `xbps-install --sync --update --yes`, so the
-# operation that most needs a pre/post pair was the one that got none. 3.2.04
-# teaches the matcher the long spellings too. This one is not a boot-safety
-# pin — an image below 3.2.04 still installs and boots fine — but a box built
-# from it can never roll back a store update, so keep this pin at or above the
-# newest installer.
-#
-# Moved Version-3.2.04 -> Version-3.2.06 for a BOOT-SAFETY reason this time.
-# 3.2.03's [ELOGIND-NO-DBUS-ACTIVATION] rename of the logind D-Bus activation
-# file broke the stock /etc/sv/sddm/run: it runs `set -e` +
-# `dbus-send ... StartServiceByName string:org.freedesktop.login1`, that call
-# fails with ServiceUnknown once the .service file is gone (even though the
-# name is owned), and the script dies before `exec sddm` — so a fresh KDE
-# install boots to a text login with no graphical session. 3.2.06 ships
-# [SDDM-WAIT-LOGIND], which waits (bounded) for /run/systemd/seats/seat0 and
-# then execs sddm regardless, plus a boot-time re-fix so a `sddm` package
-# update cannot restore the broken script. An image pinned below 3.2.06 hands
-# a KDE box a desktop-less first boot, so this pin must stay at or above it.
-INSTALLER_REF="${INSTALLER_REF:-Version-3.2.06}"
+INSTALLER_REF="${INSTALLER_REF:-main}"
 INSTALLER_BASENAME="${INSTALLER_BASENAME:-Void_Linux_Installer.sh}"
 INSTALLER_URL_BASE="${INSTALLER_URL_BASE:-https://raw.githubusercontent.com}"
 
@@ -416,7 +389,7 @@ installer_fetch() {
     # shellcheck disable=SC2086  # $_if_retry is a deliberate option word-split
     if ! curl -fsSL --max-time 60 $_if_retry -o "$_if_dest" "$_if_url"; then
         printf 'FATAL: could not fetch the Void_Linux_Installer from %s (after retries).\n' "$_if_url" >&2
-        printf '       Check network access, or set INSTALLER_REF=<tag|commit> to pin a release.\n' >&2
+        printf "       Check network access. The default ref is 'main'; set INSTALLER_REF=<tag|commit> to pin a reproducible build.\n" >&2
         exit 1
     fi
     if command -v bash >/dev/null 2>&1; then
@@ -446,11 +419,130 @@ rk33xx_flash_uboot() {
     dd if="${dir}/u-boot.itb" of="${dev}" seek=16384 conv=notrunc,fsync >/dev/null 2>&1
 }
 
-# These should all resolve even if they won't have the appropriate
-# repodata files for the selected architecture.
-: "${XBPS_REPOSITORY:=--repository=https://repo-default.voidlinux.org/current \
-                      --repository=https://repo-default.voidlinux.org/current/musl \
-                      --repository=https://repo-default.voidlinux.org/current/aarch64}"
+# [MIRROR-AUTO] Repository mirror selection for image builds.
+#
+# The Installer picks its primary mirror from the chosen timezone
+# (MIRROR_AUTO in Void_Linux_Installer.sh); the live build used to hardcode
+# repo-default, which geo-resolves per builder (this box landed on the
+# Helsinki mirror at ~0.29 MB/s while the US mirror did ~2.6 MB/s).
+#
+# Selection order:
+#   1. VOIDLIVE_MIRROR=<base url> — explicit, no probing (reproducible builds).
+#   2. cached winner from ${BUILD_ENV_DIR:-$PWD/.void-buildenv}/void-mirror
+#      (TTL VOIDLIVE_MIRROR_CACHE_SECS, default 3600).
+#   3. timezone -> region candidate first, then a short ranged GET of each
+#      candidate's repodata; fastest reachable mirror wins, ties keep the
+#      region candidate. No third-party geolocation service is contacted.
+#
+# Everything below is POSIX sh because lib.sh is sourced by the mklive tools.
+void_mirror_timezone() {
+    [ -n "${TZ:-}" ] && { printf '%s\n' "$TZ"; return 0; }
+    _vtz=$(readlink -f /etc/localtime 2>/dev/null || true)
+    case "$_vtz" in
+        */zoneinfo/*) printf '%s\n' "${_vtz#*/zoneinfo/}" ;;
+        *) printf '%s\n' "$(date +%Z 2>/dev/null || true)" ;;
+    esac
+}
+
+void_mirror_region() {
+    case "$1" in
+        America/Sao_Paulo|America/Argentina/*|America/La_Paz|America/Bogota|America/Lima|America/Caracas|America/Santiago|America/Buenos_Aires|America/Mexico_City)
+            printf '%s\n' https://void.voidbr.org ;;
+        America/*|Canada/*)
+            printf '%s\n' https://mirrors.summithq.com/voidlinux ;;
+        Europe/*)
+            printf '%s\n' https://repo-de.voidlinux.org ;;
+        Asia/*|Indian/*)
+            printf '%s\n' https://mirrors.tuna.tsinghua.edu.cn/voidlinux ;;
+        Australia/*|Pacific/*)
+            printf '%s\n' https://mirror.aarnet.edu.au/pub/voidlinux ;;
+        *)
+            printf '%s\n' https://repo-default.voidlinux.org ;;
+    esac
+}
+
+void_mirror_candidates() {
+    _vregion=$(void_mirror_region "$(void_mirror_timezone)")
+    _vseen=
+    for _vm in "$_vregion" \
+        https://repo-fastly.voidlinux.org \
+        https://repo-default.voidlinux.org \
+        https://repo-de.voidlinux.org \
+        https://mirrors.summithq.com/voidlinux \
+        https://mirrors.tuna.tsinghua.edu.cn/voidlinux \
+        https://mirror.aarnet.edu.au/pub/voidlinux \
+        https://void.voidbr.org; do
+        case " $_vseen " in *" $_vm "*) continue ;; esac
+        _vseen="$_vseen $_vm"
+        printf '%s\n' "$_vm"
+    done
+}
+
+# Print the measured download speed (B/s) for one mirror, or fail.
+void_mirror_probe() {
+    command -v curl >/dev/null 2>&1 || return 1
+    _vres=$(curl -fsS -r 0-262143 -o /dev/null \
+        --max-time "${VOIDLIVE_MIRROR_PROBE_TIMEOUT:-8}" \
+        -w '%{http_code} %{speed_download}' \
+        "$1/current/x86_64-repodata" 2>/dev/null) || return 1
+    case "$_vres" in
+        "200 "*|"206 "*)
+            set -- $_vres
+            [ "${2:-0}" -gt 0 ] 2>/dev/null || return 1
+            printf '%s\n' "$2" ;;
+        *) return 1 ;;
+    esac
+}
+
+void_mirror_pick() {
+    [ -n "${VOIDLIVE_MIRROR_SELECTED:-}" ] && return 0
+    if [ -n "${VOIDLIVE_MIRROR:-}" ]; then
+        VOIDLIVE_MIRROR_SELECTED="${VOIDLIVE_MIRROR%/}"
+        export VOIDLIVE_MIRROR_SELECTED
+        return 0
+    fi
+
+    _vdir="${BUILD_ENV_DIR:-$PWD/.void-buildenv}"
+    _vcache="$_vdir/void-mirror"
+    if [ -r "$_vcache" ]; then
+        read -r _vts _vurl < "$_vcache" || true
+        if [ -n "${_vurl:-}" ] && [ -n "${_vts:-}" ] &&
+           [ "$(date +%s)" -lt "$(( _vts + ${VOIDLIVE_MIRROR_CACHE_SECS:-3600} ))" ] 2>/dev/null; then
+            VOIDLIVE_MIRROR_SELECTED="$_vurl"
+            export VOIDLIVE_MIRROR_SELECTED
+            return 0
+        fi
+    fi
+
+    _vregion=$(void_mirror_region "$(void_mirror_timezone)")
+    _vbest=; _vspeed=0
+    while IFS= read -r _vm; do
+        [ -n "$_vm" ] || continue
+        _vs=$(void_mirror_probe "$_vm") || continue
+        if [ "$_vs" -gt "$_vspeed" ] 2>/dev/null; then
+            _vspeed=$_vs; _vbest=$_vm
+        fi
+    done <<EOF
+$(void_mirror_candidates)
+EOF
+    [ -n "$_vbest" ] || _vbest=$_vregion
+    VOIDLIVE_MIRROR_SELECTED=$_vbest
+    export VOIDLIVE_MIRROR_SELECTED
+    mkdir -p "$_vdir" 2>/dev/null || true
+    printf '%s %s\n' "$(date +%s)" "$_vbest" > "$_vcache" 2>/dev/null || true
+    printf 'void-mirror: %s (region=%s, %s B/s)\n' \
+        "$_vbest" "$_vregion" "$_vspeed" >&2
+}
+
+void_repository_args() {
+    void_mirror_pick
+    printf -- '--repository=%s/current --repository=%s/current/aarch64\n' \
+        "$VOIDLIVE_MIRROR_SELECTED" "$VOIDLIVE_MIRROR_SELECTED"
+}
+
+# [MIRROR-AUTO] all architectures resolve under the selected mirror; a musl
+# image still re-adds .../current/musl explicitly (see UPSTREAM.md).
+: "${XBPS_REPOSITORY:=$(void_repository_args)}"
 
 # This library is the authoritative source of the platform map,
 # because of this we may need to get this information from the command

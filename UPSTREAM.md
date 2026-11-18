@@ -30,9 +30,9 @@ git merge upstream/master
 
 | File | Local change |
 | --- | --- |
-| `mklive.sh` | Limine EFI boot, opt-in persistent overlay (`-R`), DE/greeter plumbing, upstream's `musl` repo dropped from `XBPS_REPOSITORY` (glibc x86_64 images only — re-add `--repository=…/current/musl` to build a musl image) |
+| `mklive.sh` | Limine EFI boot, opt-in persistent overlay (`-R`), DE/greeter plumbing, upstream's hardcoded `repo-default` repository lines replaced by `lib.sh`'s `[MIRROR-AUTO]` list (timezone/latency-selected or `VOIDLIVE_MIRROR`); upstream's `musl` repo dropped (glibc x86_64 images only — re-add `--repository=…/current/musl` to build a musl image) |
 | `mkiso.sh` | per-DE flavors, greeter selection, DE extras |
-| `lib.sh` | `installer_fetch` — fetch the `Void_Linux_Installer` at build time |
+| `lib.sh` | `installer_fetch` — fetch the `Void_Linux_Installer` at build time; `[MIRROR-AUTO]` mirror selection (timezone → region, latency probe, 1 h cache, `VOIDLIVE_MIRROR` override) replaces the hardcoded `repo-default` default |
 | `mknet.sh` | fetch the installer (build-time) instead of copying `installer.sh` |
 | `dracut/netmenu/module-setup.sh` | comment only |
 | `dracut/vmklive/display-manager-autologin.sh` | SDDM session marker |

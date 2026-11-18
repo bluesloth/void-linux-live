@@ -638,7 +638,10 @@ while getopts "a:b:c:H:r:C:T:Kk:l:i:I:S:e:s:o:p:g:v:P:R:x:B:Vh" opt; do
 	esac
 done
 shift $((OPTIND - 1))
-XBPS_REPOSITORY="$XBPS_REPOSITORY --repository=https://repo-default.voidlinux.org/current --repository=https://repo-default.voidlinux.org/current/aarch64"
+# [MIRROR-AUTO] The repository list comes from lib.sh (explicit VOIDLIVE_MIRROR
+# or timezone/latency-selected mirror). Do not re-add a hardcoded repo-default
+# here: it reintroduces the geo-selected slow mirror on every build. -r still
+# prepends a user-supplied repository ahead of the auto-selected ones.
 
 # Persistent overlay is OPT-IN (-R or PERSISTENT_OVERLAY=yes): when booting
 # from a USB stick that carries a partition labeled VOID_OVL (see

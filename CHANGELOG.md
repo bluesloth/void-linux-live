@@ -11,6 +11,25 @@ commit lists the underlying source commits.
 
 ## Unreleased
 
+### Mirror
+
+- **[MIRROR-AUTO]** Image builds no longer hardcode `repo-default.voidlinux.org`
+  in `mklive.sh`/`lib.sh`. Mirror choice now follows the Installer's model: an
+  explicit `VOIDLIVE_MIRROR=<base url>` wins (no probing, for reproducible
+  builds); otherwise the builder timezone maps to a region (`America/*` →
+  SummitHQ, `Europe/*` → repo-de, `Asia/*` → Tsinghua, `Australia|Ocean*` →
+  AARNet, South America → voidbr, else repo-default) and a short ranged GET of
+  each candidate's `x86_64-repodata` picks the fastest reachable mirror, with
+  ties going to the region candidate. No third-party geolocation service is
+  contacted. The winner is cached for `VOIDLIVE_MIRROR_CACHE_SECS` (default
+  3600) at `${BUILD_ENV_DIR:-$PWD/.void-buildenv}/void-mirror`, so every tool
+  sourcing `lib.sh` in one build agrees; `VOIDLIVE_MIRROR_PROBE_TIMEOUT`
+  (default 8 s) bounds each probe. This box's `repo-default` resolves to the
+  Helsinki mirror (~0.29 MB/s) while SummitHQ serves ~2.6 MB/s, so the
+  previously forced slow path is gone. The generated list keeps both
+  `/current` and `/current/aarch64` under the chosen mirror; musl images must
+  still add `.../current/musl` explicitly via `-r`.
+
 ### Cache
 
 - **[CACHE-PAYLOAD-UPDATE]** `xbps-cache-tool.sh` now refreshes **package
@@ -63,6 +82,20 @@ commit lists the underlying source commits.
 
 ### Interop
 
+- **[INSTALLER-REF-MAIN]** The shipped Installer now tracks `main` again,
+  unpinned: `lib.sh` `INSTALLER_REF` defaults to `main` instead of the
+  `Version-3.2.06` tag, so a build fetches the current
+  `Void_Linux_Installer.sh` from `bluesloth/void-linux-installer@main` on
+  every run. This matches the on-stick updater
+  (`installer-update-tool.sh` already defaults to `main`) and the original
+  `[INSTALLER-FETCH]` design; pinning is still available explicitly via
+  `INSTALLER_REF=<tag|commit>` for a reproducible build. All prior boot-safety
+  pin bumps (3.2.01 → 3.2.06) are kept as history in `lib.sh` — they explain
+  why a tag was frozen, and why that is no longer the default. The resolved
+  `SCRIPT_VERSION` and sha256 are still recorded at
+  `/etc/void-linux-live/installer-ref`, and tag names are explicitly NOT
+  trusted as version identity (`Version-3.3.00` ships a script that reports
+  `Version-3.2.07`).
 - **[INSTALLER-REF-3.2.06]** Bump the shipped-Installer pin
   `Version-3.2.04` → `Version-3.2.06`, and this one **is** boot-safety. 3.2.03's
   `[ELOGIND-NO-DBUS-ACTIVATION]` rename of

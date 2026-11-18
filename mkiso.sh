@@ -74,7 +74,7 @@ cleanup() {
 # The Installer is NOT vendored in this tree: it is fetched from the public repo
 # at build time (lib.sh installer_fetch), so every build carries the current
 # installer and there is no pinned copy to lag behind.  Pin a release (or a
-# commit) for a reproducible build:  INSTALLER_REF=v2.9.95 ./mkiso.sh -b base
+# commit) for a reproducible build:  INSTALLER_REF=Version-3.2.06 ./mkiso.sh -b base
 #
 # The upstream script carries an @@MKLIVE_VERSION@@ placeholder; this project's
 # installer does not, so the sed below is a no-op kept for upstream
